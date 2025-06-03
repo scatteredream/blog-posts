@@ -119,7 +119,7 @@ categories:
 
 主要是鉴别报文是否被篡改。
 
-#### 数字签名
+#### 数字签名（私钥加密-公钥解密）
 
 decryption and encryption
 
@@ -134,23 +134,67 @@ A要发出信息，并进行数字签名，将报文用私钥SK~A~进行D运算�
 
 是一种摘要算法，将任意长度的报文经过哈希函数可以的到固定长度的字符串。
 
-#### 结合报文鉴别码（MAC）实现数字签名报文鉴别
+#### <span id="sign">结合报文鉴别码（MAC）实现数字签名报文鉴别</span>
 
 Message Authentication Code, MAC
 
 H(X) 代表 X 的哈希值；D(X) 代表 X 经过私钥的D运算以后的结果；E(X) 代表 X 经过 公钥的E运算之后的结果
 
-$D(E(X)) = X$          $E(D(X)) = X$ 
+D(E(X)) = X         E(D(X)) = X
 
 扩展报文实现的数字签名可以分为三类：
 
-$A + H(A)$ ：只篡改报文A或者H(A)可以鉴别出来，但是直接换一个 X + H(X) 直接会蒙混过关，由此引出了使用密钥K来进行哈希运算的方法。
-
-$A + H(A,K)$： 使用对称密钥$K$，如果报文$A$被篡改成$X$，但是攻击者不知道密钥，因此无法伪造出哈希值$H(X,K)$，另一边根据密钥计算出$H(X,K)$，就能发现报文被篡改过。这样将密钥拼接在正文之后，得出的散列值就是**HMAC**。JWT(Json Web Token)采用的数字签发就可以采用这样的方式 （HS256 代表 HMAC 散列函数为SHA-256）**对密钥K<u>严格要求保密</u>**。[JWT 签名算法 HS256、RS256 及 ES256 及密钥生成 - This Cute World](https://ryan4yin.space/posts/jwt-algorithm-key-generation/) 
-
-$A + D(H(A))$：使用私钥对报文的哈希进行D运算，其他人使用公钥对密文进行E运算能够得出哈希值，将这个哈希值和报文段的哈希值比较即可。如果$A$被篡改为$X$，攻击者因为不知道发送者的私钥，因此无法得出一个正确的$D(H(X))$，这时候发给接收者，接受者再对攻击者伪造的哈希值密文进行E运算，得出哈希值肯定和真正的$H(X)$不同，这就是RS256和ES256的原理。**由此方法扩展出的报文<u>不可伪造，也不可否认</u>**，同时可以运用到分布式架构中，一个服务签发，其他服务验证只需要公钥即可。ES256（ECDSA）使用椭圆曲线计算公钥。
+1. ❌A + H(A)：只篡改报文A或者H(A)可以鉴别出来，但是直接换一个 X + H(X) 直接会蒙混过关，由此引出了使用密钥K来进行哈希运算的方法。
+2. ✅A + H(A,K)：也就是 HMAC，使用对称密钥K，如果报文A被篡改成X，但是攻击者不知道密钥，因此无法伪造出哈希值H(X,K)，另一边根据密钥计算出H(X,K)，就能发现报文被篡改过。这样将密钥拼接在正文之后，得出的散列值就是**HMAC**。JWT(Json Web Token)采用的数字签发就可以采用这样的方式 （HS256 代表 HMAC 散列函数为SHA-256）**对密钥K<u>严格要求保密</u>**。
+3. ✅A + D(H(A))：使用私钥对报文的哈希进行D运算，其他人使用公钥对密文进行E运算能够得出哈希值，将这个哈希值和报文段的哈希值比较即可。如果A$被篡改为$X，攻击者因为不知道发送者的私钥，因此无法得出一个正确的 D(H(X))，这时候发给接收者，接受者再对攻击者伪造的哈希值密文进行E运算，得出哈希值肯定和真正的H(X)不同，这就是RS256和ES256的原理。**由此方法扩展出的报文<u>不可伪造，也不可否认</u>**，同时可以运用到分布式架构中，一个服务签发，其他服务验证只需要公钥即可。ES256（ECDSA）使用椭圆曲线计算公钥。
 
 [JWT 签名算法 HS256、RS256 及 ES256 及密钥生成 - 於清樂 - 博客园](https://www.cnblogs.com/kirito-c/p/12402066.html) 
+
+##### RSA 与 DSA
+
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/20221021233729-2.png" alt="RSA算法和DSA的区别" style="zoom:67%;" />
+
+Elliptic Curve Digital Signature Algorithm，用私钥生成原文的签名，用公钥验证签名是否与原文相对应。
+
+> ECDSA 签名流程：
+>
+> - **输入**：私钥 `d`、待签名消息 `m`
+> - **输出**：签名 `(r, s)`
+>
+> 1. **消息哈希**：
+>    - 计算 `e = HASH(m)`，比如使用 SHA-256
+> 2. **选随机数**：
+>    - 随机选一个整数 `k`，满足 `1 ≤ k < n`，其中 `n` 是椭圆曲线的阶
+>    - ⚠️ 注意：`k` 必须**绝对不能重复**，否则私钥会被泄漏（Sony PS3 曾因这个出过事故）
+> 3. **计算椭圆曲线点**：
+>    - `P = k × G`，其中 `G` 是椭圆曲线的基点
+>    - 取 `r = P.x mod n`，如果 `r == 0`，重新选 `k`
+> 4. **计算签名值 s**：
+>    - `s = k⁻¹ × (e + d × r) mod n`，如果 `s == 0`，重新选 `k`
+> 5. **输出签名对** `(r, s)`
+
+
+
+> ECDSA 验证流程
+>
+> **输入**：公钥 `Q = d × G`、消息 `m`、签名 `(r, s)`
+>  **输出**：验签结果 true / false
+>
+> 1. **检查 r、s 是否在合法范围内**：`1 ≤ r,s < n`，否则签名无效
+> 2. **消息哈希**：
+>    - 计算 `e = HASH(m)`
+> 3. **计算中间值**：
+>    - `w = s⁻¹ mod n`
+>    - `u1 = e × w mod n`
+>    - `u2 = r × w mod n`
+> 4. **计算点坐标**：
+>    - `P = u1 × G + u2 × Q`
+>    - 如果 `P == ∞`，则签名无效
+> 5. **验证签名是否正确**：
+>    - 签名有效 ⇔ `r ≡ P.x mod n`
+
+- 对于非对称的加密算法，加密功能的实现=公钥加密+私钥解密，签名功能的实现=私钥加密+公钥解密。
+- 换言之，在DSA算法中，私钥不能解密使用公钥加密的数据，因此具有加密功能，而RSA可以。
 
 ### 实体鉴别
 
@@ -188,9 +232,14 @@ A跟B开始建立通信，B就把发送的数据用C的公钥加密，C直接可
 
 ##  密钥分配与管理
 
-### 对称密钥交换
+### 非对称加密算法
 
-#### RSA
+- 加密算法：公钥加密，私钥解密。
+- 签名算法：私钥加密，公钥解密。
+
+#### <span id="rsa">RSA</span>
+
+> [Rivest-Shamir-Adleman - Wikipedia](https://zh.wikipedia.org/wiki/RSA%E5%8A%A0%E5%AF%86%E6%BC%94%E7%AE%97%E6%B3%95) 
 
 ##### 难点：大数因式分解
 
@@ -209,11 +258,14 @@ A跟B开始建立通信，B就把发送的数据用C的公钥加密，C直接可
 
 ##### RSA 的缺陷
 
-没有前向保密性，所有的数字（质数乘积N，公钥E）必须提前沟通好，依赖于长期的静态密钥对（公钥和私钥）来交换对称密钥，而没有使用每次会话生成的临时密钥对。在 RSA 密钥交换过程中，如果服务器的私钥被泄露，攻击者可以解密所有使用该私钥加密的对称密钥，进而恢复以前的会话数据，从而破坏了前向保密性。
+- 没有前向保密性，所有的数字（质数乘积N，公钥E）必须提前沟通好，依赖于长期的静态密钥对（公钥和私钥）来交换对称密钥，而没有使用每次会话生成的临时密钥对。在 RSA 密钥交换过程中，如果服务器的私钥被泄露，攻击者可以解密所有使用该私钥加密的对称密钥，进而恢复以前的会话数据，从而破坏了前向保密性。
+- 基于大数乘积分解问题，密钥和签名的长度都很长，签名速度和验证速度慢，占用CPU时间长，抗量子攻击（Shor算法）弱
 
 #### Diffle-Hellman 密钥交换
 
-[一文搞懂Diffie-Hellman密钥交换协议 - 知乎](https://zhuanlan.zhihu.com/p/599518034) 
+> [Diffle-Hellman Key Exchange - Wikipedia](https://zh.wikipedia.org/wiki/%E8%BF%AA%E8%8F%B2-%E8%B5%AB%E7%88%BE%E6%9B%BC%E5%AF%86%E9%91%B0%E4%BA%A4%E6%8F%9B)
+>
+> [一文搞懂Diffie-Hellman密钥交换协议 - 知乎](https://zhuanlan.zhihu.com/p/599518034) 
 
 ##### 难点：离散对数
 
@@ -234,19 +286,21 @@ A跟B开始建立通信，B就把发送的数据用C的公钥加密，C直接可
 
 ![image-20241129230002490](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241129230002490.png)
 
-##### ECDHE
+##### <span id=ecdhe>ECDHE 算法</span>
 
-static DH算法 -- > DHE算法 -- > ECDHE算法
+[Elliptic-Curve Diffie–Hellman - Wikipedia](https://zh.wikipedia.org/wiki/%E6%A9%A2%E5%9C%93%E6%9B%B2%E7%B7%9A%E8%BF%AA%E8%8F%B2-%E8%B5%AB%E7%88%BE%E6%9B%BC%E9%87%91%E9%91%B0%E4%BA%A4%E6%8F%9B) 
+
+static DH算法 -- > DHE算法、ECDH算法 -- > ECDHE算法
 
 **static DH** 算法里有一方的私钥是静态的，也就说每次密钥协商的时候有一方的私钥都是一样的，一般是服务器方固定，即 a 不变，客户端的私钥则是随机生成的。 于是，DH 交换密钥时就只有客户端的公钥是变化，而服务端公钥是不变的，那么随着时间延长，黑客就会截获海量的密钥协商过程的数据，因为密钥协商的过程有些数据是公开的，黑客就可以依据这些数据暴力破解出服务器的私钥，然后就可以计算出会话密钥了，于是之前截获的加密数据会被破解，所以 static DH 算法**不具备前向安全性**。
 
-**DHE** 
+**DHE** ——**Ephemeral（临时密钥）**：在 DHE 中，"Ephemeral" 表示每次会话都生成新的密钥对（临时密钥）。因此，即使密钥在某一时刻被泄露，它也无法用于恢复以前的通信，增强了前向保密性（forward secrecy）。
 
-- **Ephemeral（临时密钥）**：在 DHE 中，"Ephemeral" 表示每次会话都生成新的密钥对（临时密钥）。因此，即使密钥在某一时刻被泄露，它也无法用于恢复以前的通信，增强了前向保密性（forward secrecy）。
+G、P可以固定，DHE 每次需要传递的数据就是计算出来的公钥，不过大数乘除性能不好，于是有了ECDHE，用ECC提高性能：
 
-G、P可以固定，DHE 每次需要传递的数据就是计算出来的公钥，不过大数乘除性能不好，于是有了ECDHE，用ECC提高性能。
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/2023-10-19-09-21-59.png)
 
-**ECDHE**（Elliptic Curve Diffie-Hellman Ephemeral） 是 Diffie-Hellman 协议的椭圆曲线版本，使用椭圆曲线加密（ECC，Elliptic Curve Cryptography）来代替传统的基于大数的计算。椭圆曲线加密在相同的安全级别下，所需的密钥长度比传统的 DH 小得多，从而提高了计算效率。
+**ECDHE**（Elliptic Curve Diffie-Hellman Ephemeral） 是 Diffie-Hellman 协议的椭圆曲线版本，使用椭圆曲线加密（ECC，Elliptic Curve Cryptography）来代替传统的基于大数的计算。基于椭圆曲线离散对数问题（ECDLP）的困难性。它定义在椭圆曲线上的一个有限域循环群上。给定一个基点 `G` 和一个点 `P = k * G`（其中 `k` 是私钥），计算 `k` 在计算上是极其困难的。公钥是曲线上的一个点，私钥是一个整数。椭圆曲线加密在相同的安全级别下，所需的密钥长度比传统的 DH 小得多，从而提高了计算效率。
 
 #### 密钥分发中心（KDC）
 
@@ -255,6 +309,10 @@ Key Distribution Center
 ### 公钥体制：CA
 
 [Certificate Authority 证书权威机构](https://zh.wikipedia.org/wiki/%E5%85%AC%E9%96%8B%E9%87%91%E9%91%B0%E8%AA%8D%E8%AD%89)
+
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/2023-10-16-17-48-27.png)
+
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/2023-10-18-10-40-13.png)
 
 除非A与B线下沟通好公钥，不然总是有可能会被中间人攻击（即中间人会截获请求者的公钥，替换成自己的公钥），那么如何保证B的公钥能准确无误传到A手上不被篡改呢？需要第三方进行数字签名，CA用自己的私钥将报文信息数字签名，也就是MAC报文鉴别码。最终报文鉴别码附在报文后面$B + D(H(B))$
 
@@ -295,6 +353,8 @@ Key Distribution Center
 
 [自签证书](https://zh.wikipedia.org/wiki/自签证书)：在用于小范围测试等目的的时候，用户也可以自己生成数字证书，但没有任何可信赖的人签名，这种自签名证书通常不会被广泛信任，使用时可能会遇到电脑软件的安全警告。
 
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/2023-10-17-16-26-23.jpg)
+
 #### CA 撤销名单
 
 CA 撤销名单：尚未到期就被[证书颁发机构](https://zh.wikipedia.org/wiki/证书颁发机构)吊销的[数字证书](https://zh.wikipedia.org/wiki/数字证书)的名单。
@@ -320,19 +380,23 @@ CA 撤销名单：尚未到期就被[证书颁发机构](https://zh.wikipedia.or
 
 Transport Layer Security
 
-### TLS 握手（TLS 1.2）
+### TLS 1.2
 
-在TCP threeway handshake之后，就会开始TLS handshake
+> [**RFC 5246**: *The Transport Layer Security (TLS) Protocol Version 1.2*](https://datatracker.ietf.org/doc/html/rfc5246)
 
-两种交换会话密钥的算法：[RSA 握手](https://xiaolincoding.com/network/2_http/https_rsa.html#rsa-%E6%8F%A1%E6%89%8B%E8%BF%87%E7%A8%8B) 和 [ECDHE 握手](https://xiaolincoding.com/network/2_http/https_ecdhe.html) 后者支持前向安全，现在使用更加广泛
+在TCP 三次握手后就会开始TLS handshake
 
-#### RSA 握手
+一般是两种交换会话密钥的算法：[RSA 握手](https://xiaolincoding.com/network/2_http/https_rsa.html#rsa-%E6%8F%A1%E6%89%8B%E8%BF%87%E7%A8%8B) 和 [ECDHE 握手](https://xiaolincoding.com/network/2_http/https_ecdhe.html)， 后者支持前向安全，现在使用更加广泛。
+
+#### 静态 RSA 握手
+
+##### 四次握手流程
 
 ![image-20241130161720294](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241130161720294.png)
 
 1. **ClientHello**: 客户端向服务器发送随机数`client random`，TLS版本，支持的加密套件列表。
 2. **ServerHello**: 服务器响应随机数`server random`，确认好加密套件，下发服务器证书(`Certificate`)。
-   - 证书里有用于`premaster`加密的服务器公钥
+   - 证书里有用于给`premaster secret`加密的服务器公钥。
 3. **Client Key Exchange**: 客户端证书验证通过后，生成另一个随机数`premaster secret`，通过**服务器证书的公钥**加密
 4. 服务器用私钥解密获取`premaster secret`，双方根据`premaster secret`和两个随机数生成`session key` 
 5. **Change Cipher Spec**: 客户端通知接下来要使用会话密钥进行通信了，之前都是明文通信。切换加密标准
@@ -356,37 +420,43 @@ Transport Layer Security
 
 ##### 前向安全性（Forward Secrecy）
 
-共享密钥被攻破不会导致之前的会话信息全部泄露。Perfect Forward Secrecy
+共享密钥被攻破**不会**导致之前的会话信息全部泄露，这就是**完美前向安全**——Perfect Forward Secrecy
 
 [如何理解前向安全性？和完美前向保密（perfect forward secrecy）区别？ - 知乎](https://www.zhihu.com/question/45203206) 
 
-[有了共享密钥为什么还需要会话密钥？ - 知乎](https://www.zhihu.com/question/348420897) 
-
-**有了premaster key为什么要session key？** 
+> [有了共享（premaster）密钥为什么还需要会话密钥？ - 知乎](https://www.zhihu.com/question/348420897) 
 
 RSA握手中不把premaster key直接当做对称密钥，单次session key泄露不会造成之前的会话信息都泄露。
 
 前向安全性问题出在共享密钥上，RSA握手的共享公-私密钥对是长期不变的，也就是说如果服务端用于RSA加密的私钥泄露会导致之前的会话信息全部暴露。如果对每次会话都生成一对RSA密钥对，理论可行，但是性能不如后面要介绍的ECDHE。
 
- 双**RSA**虽然也能实现**PFS**，但是效率太差，没有公司会采用， 基本都是**RSA + ECDHE**。 
+ 双**RSA**虽然也能实现**PFS**，但是效率太差，没有公司会采用， 基本都是**RSA + ECDHE**。
+
+
 
 #### ECDHE 握手
+
+[Elliptic-curve Diffle-Hellman Ephemeral](#ecdhe)
+
+##### 四次握手流程
+
+[ECDHE：椭圆曲线（ECC） + DH密钥交换 + 临时（Ephemeral）](#ecdhe) 
 
 椭圆曲线最重要的参数是**椭圆曲线类型**（基点G）[RSA 算法的替代品：X25519/Ed25519 使用记录 | 存在感消失的地方|ω•`)](https://akarin.dev/2021/09/16/a-taste-of-curve25519/)  
 
 ![image-20241130165130228](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241130165130228.png)
 
-1. **ClientHello**: 客户端向服务器发送**随机数**client random，TLS版本，支持的加密套件列表
-2. **ServerHello**: 服务器响应**随机数**server random，确认好双方都支持的加密套件，同时下发服务器**证书**(`certificate`)
-   - 证书中的公钥用于鉴别自己发出的签名有效。
-3. **Server Key Exchange**: 生成随机数作为**临时私钥**，保留在本地。公开**椭圆曲线**基点G，一般是X25519，根据G和临时生成的私钥，算出**公钥**发给客户端。为了保证公钥不被篡改，同时会使用RSA进行数字签名。
-4. **Client Key Exchange**: 客户端验证通过后，生成自己临时私钥，根据基点G算出**公钥**，发送给服务器。
-5. 这样，双方知道了对方的公钥，就可以开始算共享密钥了。
-6. 之后的步骤就是互相发送change cipher spec+finished，ECDHE可以在客户端发完信息之后可以直接开始发送`application data` 
+1. **ClientHello**: 客户端向服务器发送**随机数** client random，TLS版本，支持的加密套件列表
+2. **ServerHello**: 服务器响应**随机数** server random，确认好双方都支持的加密套件，同时下发服务器**证书**(`certificate`)
+   - 证书中的公钥不用于加密premaster，而是为了给
+3. **Server Key Exchange**: 生成随机数作为**私钥 b（Ephemeral Private Key）**，保留在本地。公开**椭圆曲线**基点 G，一般是X25519，根据 G 和私钥 b，算出**公钥 bG**发给客户端。为了保证曲线的参数G以及公钥不被篡改，同时会使用CA证书中的私钥进行数字签名。
+4. **Client Key Exchange**: 客户端使用CA证书的公钥验证通过后，随机生成自己临时私钥a，根据基点G算出**公钥 aG**，发送给服务器。
+5. 这样，双方知道了对方的公钥，就可以开始算共享密钥了，a(bG) = b(aG) = premaster key，加上两个随机数就是会话密钥。
+6. 互相发送**Change cipher spec+Finished**之后可以开始发送应用数据。ECDHE因为前向安全可以在客户端发完信息之后直接开始发送`application data`（TCP False Start）
 
-![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/0mhr8kq63w.jpeg)
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/2023-10-16-04-06-23.jpg)
 
-==抓包实战== 
+##### 抓包实战 
 
 <u>搭建https server（springboot）</u>
 
@@ -428,11 +498,11 @@ curl https://localhost:8443/hello -k
 
 tcp.port == 8443
 
-##### TLS False Start
+##### TLS False Start(RFC 7918)
 
 [https - TLS False Start究竟是如何加速网站的 - 野狗科技官方专栏 - SegmentFault 思否](https://segmentfault.com/a/1190000004003319) 
 
-![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/0mhr8kq63w.jpeg)
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/0mhr8kq63w.jpeg" alt="img" style="zoom:80%;" />
 
 > The recommended whitelists are such that if cryptographic algorithms suitable for forward secrecy would possibly be negotiated, no False Start will take place if the current handshake fails to provide forward secrecy.
 >
@@ -551,7 +621,7 @@ TLS 握手主要用来解决服务器的可信度问题，TLS 记录可以解决
 
 ------
 
-#### 如何应对TLS漏洞？
+#### 如何应对？
 
 1. **升级协议和实现**
    - 确保使用最新版本的TLS（推荐TLS 1.2或TLS 1.3）。
@@ -567,6 +637,8 @@ TLS 握手主要用来解决服务器的可信度问题，TLS 记录可以解决
    - 监控网络流量中的潜在攻击行为。
 
 ### TLS 1.3
+
+> [**RFC 8446**: *The Transport Layer Security (TLS) Protocol Version 1.3*](https://datatracker.ietf.org/doc/html/rfc8446) 
 
 ![图片](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/0877fe78380bf34ad3b28768e59fb53a.png)
 
