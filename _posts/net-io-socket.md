@@ -381,21 +381,58 @@ epoll 是解决 C10K 问题的利器，通过两个方面解决了 select/poll �
 
 创建eventpoll结构，主要包含以下三个结构：
 
-0、`wait_queue_head_t wq` 用于 `epoll_wait` 阻塞等待事件发生。
+###### `eventpoll` 数据结构
 
-1、`rb_root rb_root` 用于快速查找文件描述符，存储所有注册的 `epitem`。
+0、`wait_queue_head_t wq` 用于 `epoll_wait` 阻塞等待事件的进程task链表。
 
-2、`list_head rdllist`  存储已触发的事件，`epoll_wait` 通过它返回事件。
+> ```c
+> struct __wait_queue_head {
+>     spinlock_t lock;      // 保护等待队列的自旋锁
+>     struct list_head task_list; // 等待队列中的进程链表
+> };
+> typedef struct __wait_queue_head wait_queue_head_t;
+> ```
+>
+> 自旋锁是为了 **在高并发或中断环境中，安全地操作等待队列链表，防止竞态条件**。
+>
+> 不用 mutex：因为这些操作有时发生在 **中断上下文** 或 **原子上下文** 中，这时不能睡眠，而 mutex 可能会导致阻塞，而 **spinlock 是忙等非阻塞的原语，适用于这种场景**。
+
+![img](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/983db0e2b75d1cdae847f663b2d90a77.jpeg)
+
+
+
+
+
+1、`rb_root rb_root` 存储所有注册的 `epitem`。
+
+2、`list_head rdllist`  存储已触发的`epitem`，`epoll_wait` 通过它返回事件。
 
 > `epitem`：表示 `epoll` 监视的 **单个文件描述符**，它既是 **红黑树的节点**，也是 **双向链表的节点**。
 >
 > ```c
 > struct epitem {
->     struct rb_node rbn;         // 红黑树节点
->     struct list_head rdllink;   // 双向链表节点
->     struct epoll_event event;   // 存储用户注册的事件
->     int fd;                     // 关联的文件描述符
+>     struct rb_node rbn;      // 红黑树节点（用于存储在 epoll 的红黑树中）
+>     struct list_head rdllink;// 就绪链表节点，指向本 epitem 所在的就绪链表
+>     
+>     struct epoll_filefd ffd; // 包含 file 和 fd 的组合（file 指针用于 I/O 操作）
+>     struct eventpoll *ep;    // 指向所属的 epoll 实例（eventpoll 结构）
+>     struct epoll_event event;// 用户关心的事件和相关数据（EPOLLIN、EPOLLOUT 等）
+> 
+> 
+>     struct list_head pwqlist; // 与 poll waitqueue 的挂钩（callback 使用）
+>     wait_queue_entry_t wait;// 等待队列 entry，包含 ep_poll_callback
+>     
+>     struct file *file;              // 被监视的 file 指针，和 ffd.file 一致
+>     struct user_struct *user;     // 指向用户结构，用于统计资源限制
+>     struct list_head fllink;// file -> epitem 反向链表（epoll_flush → file → epitem）
+>     
+>     u64 ttid;// 线程 ID（用于支持多线程的 EPOLLONESHOT）
+>     u32 nwait; // 当前挂载的等待队列数目（多个设备会使用多个 wait_queue）
+>     u32 wakeup_source;// 作为唤醒来源标识（通常用于 PM）
+> 
+>     unsigned int revents;    // 实际发生的事件（由 poll 返回）
 > };
+> 
 > ```
 >
 > `epoll_event`：在 `epoll` 中，事件（event）是通过 `epoll_event` 结构体来定义和处理的。`epoll` 的事件分类主要基于 I/O 操作的类型（例如：可读、可写等），它们可以通过 `epoll_ctl` 函数注册，之后通过 `epoll_wait` 等函数来等待这些事件的发生。
@@ -419,74 +456,107 @@ epoll 是解决 C10K 问题的利器，通过两个方面解决了 select/poll �
 > epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
 > ```
 
+###### `epoll_ctl`
+
 <img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241114221957536.png" alt="image-20241114221957536" style="zoom: 80%;" />
 
-3、`epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev)`：将要监听的 fd 以及要监听的事件类型封装成 `epitem`，作为节点添加到红黑树，设置 `ep_poll_callback`回调函数，这个函数会在监听到fd发生对应的事件时触发，并把 fd 对应的 `epitem`  添加到就绪链表中。
+`epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev)`：将要监听的 fd 以及要监听的`epoll_event`封装成 `epitem`，作为节点添加到红黑树。并且将 `epitem`对应的等待队列项(`wait_queue_entry`)加到内核驱动程序管理的的 fd 等待队列，设置好回调函数`ep_poll_callback`。
 
-> 回调函数：将函数作为参数传入，Java中是函数式接口的实现类，C中是函数指针
+> 回调函数：将函数作为参数传入，Java中是函数式接口的实现类，C中是函数指针，主要目的就是为了解耦
 >
-> 事件驱动：以状态的转换作为事件发生的标志，事件发生会触发回调函数的执行。而事件是多种多样的，这就要求执行的函数不能写死，需要实现充分的解耦
+> 事件驱动：以状态的转换作为事件发生的标志，事件发生会触发回调函数的执行。而事件是多种多样的，这就要求执行的函数不能写死，需要实现充分的解耦 [C 语言回调函数详解 | 菜鸟教程 (runoob.com)](https://www.runoob.com/w3cnote/c-callback-function.html) 
+
+> 内核驱动程序管理——FD 级别的等待队列：
 >
-> [C 语言回调函数详解 | 菜鸟教程 (runoob.com)](https://www.runoob.com/w3cnote/c-callback-function.html) 
+> ```c
+> typedef struct wait_queue_entry wait_queue_entry_t;
+> 
+> struct wait_queue_entry {
+>     unsigned int flags;     // 等待者标志，如 WQ_FLAG_EXCLUSIVE
+>     void *private;          // 指向私有数据，这里是 epitem
+>     wait_queue_func_t func; // 回调函数，通常是 ep_poll_callback
+>     struct list_head entry; // 链表节点，用于挂载在等待队列里
+> };
+> ```
+>
+> - 通过 `epoll_ctl` 为监听的 fd 创建 `epitem` 
+> - 每个`epitem`里对应一个 fd 的`wait_queue_entry` ，这个队列项会被**注册到该文件描述符本身在内核驱动程序（如 socket）中维护的等待队列头**上。
+> - 当这个 fd 上发生 I/O 事件（例如 socket 接收到数据包）时，内核驱动程序会调用 `__wake_up_common()` 遍历 fd 的等待队列，调用挂载在`wait_queue_entry`上的func也就是`ep_poll_callback`回调函数。
 
-4、`epoll_wait(epfd, events, 10, 5000)`：最多监听 10 个事件，超时时间 5 秒。
+###### `epoll_wait`睡眠等待前
 
-```c
-struct epoll_event events[10]; // 存储触发的事件
-int nfds = epoll_wait(epfd, events, 10, 5000); // 最多监听 10 个事件，超时时间 5 秒
+`epoll_wait(epfd, events, 10, 5000)`：最多监听 10 个事件，超时时间 5 秒。
 
-if (nfds < 0) {
-    perror("epoll_wait failed");
-    exit(EXIT_FAILURE);
-}
+> 在用户态需要创建一个空的`events`数组传给 `epoll_wait`，触发事件时回调函数会把 fd 对应的 `epitem` 添加到`list_head`中去。调用`epoll_wait`时检查`list_head`是否为空，当然这个过程需要参考配置的等待时间，可以等一定时间，也可以一直等。
+>
+> ```c
+> struct epoll_event events[10]; // 存储触发的事件
+> int nfds = epoll_wait(epfd, events, 10, 5000); // 最多监听 10 个事件，超时时间 5 秒
+> 
+> if (nfds < 0) {
+>     perror("epoll_wait failed");
+>     exit(EXIT_FAILURE);
+> }
+> 
+> for (int i = 0; i < nfds; i++) {
+>     if (events[i].events & EPOLLIN) {
+>         printf("文件描述符 %d 可读\n", events[i].data.fd);
+>     }
+> }
+> 
+> ```
 
-for (int i = 0; i < nfds; i++) {
-    if (events[i].events & EPOLLIN) {
-        printf("文件描述符 %d 可读\n", events[i].data.fd);
-    }
-}
+递归链：
 
-```
+- `epoll_wait->ep_poll->有事件ep_send_events|无事件task睡眠,被唤醒后ep_send_events`
 
-在用户态需要创建一个空的`events`数组传给 `epoll_wait`，触发事件时回调函数会把 fd 对应的 `epitem` 添加到`list_head`中去。调用`epoll_wait`时检查`list_head`是否为空，当然这个过程需要参考配置的等待时间，可以等一定时间，也可以一直等。
+- `ep_send_events->ep_scan_ready_list->ep_send_events_proc`
 
-根据内核的 poll 机制，epoll 需要为每个监听的 fd 构造一个 epoll entry(设置关心的事件以及回调函数)作为等待队列成员睡眠在每个 fd 的等待队列，以便 fd 上的事件就绪时可以通过回调函数通知。无事件的时候，多个进程 task 调用`epoll_wait`睡眠在 epoll 的 wq 睡眠队列上。
+epoll 的 task 等待队列 `wait_queue_head_t wq`：epoll 作为进程 task 的中间层，它需要有一个等待队列 `wq` 给 task。在没事件来 epoll_wait 的时候来睡眠等待(epoll fd 本身也是一个 fd，它和其他 fd 一样也有内核驱动管理的等待队列，作为 poll 机制被 poll 的时候睡眠等待的地方)。
 
-1. 这个时候一个请求RQ_1上来，listen fd 这个时候就绪，开始唤醒其对应的睡眠队列上的 epoll entry，并执行之前 epoll 注册的回调函数 `ep_poll_callback`。
-2. `ep_poll_callback`主要做两件事情：(1) 发生的事件是 epoll entry 关心的，则将`epitem`挂载到epoll的就绪链表并进入(2)，否则结束。(2)如果当前等待队列`wq`不为空，则唤醒睡眠在`wq`上睡眠的task(唤醒一个还是多个，是区分epoll的ET模式还是LT模式)。
-3. `epoll_wait`被唤醒继续执行，在`ep_poll`中调用`ep_send_events`将 fd 相关的`epoll_event`和数据拷贝到用户空间传进来的`events`数组里，这个时候就需要遍历 epoll 的**就绪链表**以便收集进程监控的多个fd的`epoll_event`和数据上报给用户进程（在`ep_scan_ready_list`中完成） 将数据放入到`events`数组中，并且返回就绪的fd数量，用户态的此时收到响应后，从`events`中拿到fd，去调用 `accept()`或者`read()`。
+> `ep_poll`: 在`epoll_wait`里调用，`ep_events_available(ep)`检查当前就绪链表是否为空。
+>
+> - 如果有事件发生就直接走到下面的`ep_send_events`处上报事件给用户。
+> - 无事件时，当前的进程 task 睡眠在 epoll 的 wq 睡眠队列上。
+
+1. 一个请求RQ_1上来，listen fd 就绪，执行之前注册的回调函数 `ep_poll_callback`。
+2. `ep_poll_callback`主要做两件事情：(1) 发生的事件是 epoll entry 关心的，则将`epitem`挂载到 epoll 的就绪链表并进入(2)，否则结束。(2)如果当前 task 等待队列`wq`不为空，则唤醒睡眠在`wq`上睡眠的task(唤醒一个还是多个，是区分epoll的ET模式还是LT模式)。
+
+> 如果`epoll_ctl`时加 `EPOLLEXCLUSIVE`，通过 `ep_poll`，task 是 排他(带 `WQ_FLAG_EXCLUSIVE`标记)加入到 epoll 的等待队列 `wq` 的。也就是说，在 `ep_poll_callback`回调中，只会唤醒一个 task。
+
+###### `epoll_wait`被唤醒后: `ep_send_events`
+
+`ep_send_events`可以是被唤醒者执行，也可以是 `ep_poll`发现就绪链表非空直接goto。
+
+唤醒者：`ep_poll_callback`（内核驱动程序） 或 `ep_scan_ready_list`（被唤醒者链式唤醒其他睡眠的）
+
+task 从`wq`被唤醒后继续执行`ep_poll`，调用`ep_send_events`将 fd 相关的`epoll_event`和数据拷贝到用户空间传进来的`events`数组里，这个时候就需要遍历 epoll 的**就绪链表**以便收集进程监控的多个fd的`epoll_event`和数据上报给用户进程（在`ep_scan_ready_list`中完成） 将数据放入到`events`数组中，并且返回就绪的fd数量，用户态的此时收到响应后，从`events`中拿到fd，去调用 `accept()`或者`read()`。
 
 > `ep_scan_ready_list`
 >
 > - 所有的 `epitem` 都转移到 txlist , 而 eventpoll 结构体上的 rdllist 被清空了。
-> - `ep_send_events_proc` 遍历 txlist，[详见下文ET/LT区别](#etlt)。
-> - 没有处理完的 `epitem` 重新插入到 `rdllist`，如果此时的 `rdllist` 非空，直接唤醒。
+> - `ep_send_events_proc` 遍历 txlist，[详见下文ET/LT区别](#etlt)。遍历过程中，对于每个epitem收集其返回的events，如果没收集到event，则继续处理其他epi，收集到event就将当前epi的事件和用户传入的数据都copy给用户空间。每次copy完成后判断如果是在LT模式，则将当前epi重新放回epoll结构体的ready list。没有处理好的 `epitem`会重新插入到 `rdllist`。
+> - 遍历完成后，如果此时的 `rdllist` 非空，并且task队列也非空，那么唤醒正在等待的task。
+>   - <span id="chainwake">task A 被回调函数唤醒</span>，执行完遍历、发送的工作之后，如果 ready list 不为空，则继续唤醒epoll睡眠队列wq上的其他 task B。task B 从 epoll_wait 醒来继续前行，重复上述流程，继续唤醒wq上的其他task C，这样链式唤醒下去。
 
-总流程：
+##### `ep_scan_ready_list` ET/LT
 
-1. 遍历并清空epoll结构体的ready list：遍历过程中，对于每个epitem收集其返回的events，如果没收集到event，则继续处理其他epi，收集到event就将当前epi的事件和用户传入的数据都copy给用户空间。完成后判断如果是在LT模式，则将当前epi重新放回epoll结构体的ready list。
-2. 唤醒工作：如果ready list不为空，则继续唤醒epoll睡眠队列wq上的其他task B。task B从epoll_wait醒来继续前行，重复上面的流程，继续唤醒wq上的其他task C，这样链式唤醒下去。
-
-##### ET(边沿触发)和 LT(水平触发)
+> Ref: 
+>
+> - [深入浅出 Linux 惊群：现象、原因和解决方案 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/385410196)
+> - [再谈 Linux epoll 惊群问题的原因和解决方案 (qq.com)](https://mp.weixin.qq.com/s/xxjCrFH1361iG-srfNL9_Q) 
+> - [Linux内核源码【epoll-LT/ET模式区别】 - 知乎](https://zhuanlan.zhihu.com/p/671209993) 
 
 当FD有数据可读时，我们调用epoll_wait（或者select、poll）可以得到通知。但是事件通知的模式有两种：
 
 * Level Triggered：简称 LT，也叫做水平触发。只要某个FD中有数据可读，每次调用`epoll_wait`都会被通知。
 * Edge Triggered：简称 ET，也叫做边沿触发。只有在某个FD状态变化时调用`epoll_wait`才会被通知。
 
-假设一个客户端socket对应的FD已经注册到了epoll实例中，客户端socket发送了2kb的数据，服务端调用epoll_wait，得到通知说FD就绪，服务端从FD读取了1kb数据回到步骤3（再次调用epoll_wait，形成循环）。如果采用LT模式，因为FD中仍有1kb数据，则回到第3步依然会返回结果，并且得到通知；如果采用ET模式，因为一开始已经消费了FD可读事件，此后FD状态并没有「变化」，因此epoll_wait也不会触发回调，数据无法读取，客户端响应就会超时。
-
-通过 ep_poll，task 是 排他(带 `WQ_FLAG_EXCLUSIVE`标记)加入到 epoll 的等待队列 `wq` 的。也就是说，在 `ep_poll_callback`回调中，只会唤醒一个 task。
-
-LT 的语义：如果事件来了，不管来了几个，只要仍然有未处理的事件，epoll都会通知。
-
-epoll_wait刚刚取到事件的时候的时候，不可能马上就调用accept去处理，事实上，epoll_wait里面的ep_poll中还没返回，这个时候显然符合“仍然有未处理的事件”这个条件，为了实现 LT 语义，需要通知别的同样阻塞在同一个epoll句柄睡眠队列上的进程。
-
-在一个 epoll 上睡眠的多个 task，如果在一个 LT 模式下的 fd 的事件上来，会唤醒 epoll 睡眠队列上的所有 task，而 ET 模式下，仅仅唤醒一个 task。
+假设一个客户端socket对应的FD已经注册到了epoll实例中，客户端socket发送了2kb的数据，服务端调用epoll_wait，得到通知说FD就绪，服务端从FD读取了1kb数据回到步骤3（再次调用epoll_wait，形成循环）。如果采用LT模式，因为FD中仍有1kb数据，则回到第3步依然会返回结果，并且得到通知；如果采用ET模式，因为一开始已经消费了FD可读事件，此后FD状态并没有「变化」，因此也不会触发callback加到就绪链表里，自然也就不会出现在events数组里，实现 ET 语义。
 
 > LT 语义的实现需要依赖以下两个机制：
 
-###### <span id="etlt">`ep_send_events_proc`: LT 将 fd 重新加到链表</span>
+###### <span id="etlt">`ep_send_events_proc`: 遍历时把节点加回去</span>
 
 递归逐渐深入：`ep_send_events->ep_scan_ready_list->ep_send_events_proc`
 
@@ -495,20 +565,98 @@ epoll_wait刚刚取到事件的时候的时候，不可能马上就调用accept�
 3. copy 完成之后，如果是 LT 模式，还会将这个 `epitem` 重新加回到 eventpoll 结构体里的 rdllist 中去：
 
 ```c
-if (!(epi->event.events & EPOLLET)) {
-    list_add_tail(&epi->rdllink, &ep->rdllist);
+// ep_send_events_proc
+/* 遍历处理 txlist（原 ep->rdllist 数据）就绪队列结点，
+     * 获取事件拷贝到用户空间。 */
+list_for_each_entry_safe(epi, tmp, head, rdllink) {
+    if (esed->res >= esed->maxevents) break;
+    ...
+    /* 先从就绪队列中删除 epi，如果是 lt
+     * 模式，就绪事件还没处理完，再把它添加回去。 */
+    list_del_init(&epi->rdllink);
+
+    /* 获取 epi 对应 fd 的就绪事件。 */
+    revents = ep_item_poll(epi, &pt, 1);
+    if (!revents) {
+        /* 如果没有就绪事件就返回（这时候，epi 已经从就绪队列中删除了。） */
+        continue;
+    }
+
+    /* 内核空间通过 __put_user 向用户空间拷贝传递数据。 */
+    if (__put_user(revents, &uevent->events) ||
+        __put_user(epi->event.data, &uevent->data)) {
+        /* 如果拷贝失败，将 epi 重新保存回就绪队列，以便下一次处理。 */
+        list_add(&epi->rdllink, head);
+        ep_pm_stay_awake(epi);
+        if (!esed->res) {
+            esed->res = -EFAULT;
+        }
+        return 0;
+    }
+
+    /* 增加成功处理就绪事件的个数。 */
+    esed->res++;
+    uevent++;
+    if (epi->event.events & EPOLLONESHOT)
+        /* #define EP_PRIVATE_BITS (EPOLLWAKEUP | EPOLLONESHOT | EPOLLET |
+         * EPOLLEXCLUSIVE) */
+        epi->event.events &= EP_PRIVATE_BITS;
+    else if (!(epi->event.events & EPOLLET)) {
+        /* lt 模式，重新将前面从就绪队列删除的 epi 添加回去。
+         * 等待下一次 epoll_wait 调用，重新走上面的逻辑。
+         * et 模式，前面从就绪队列里删除的 epi 将不会被重新添加，
+         * 直到用户关注的事件再次发生。*/
+        list_add_tail(&epi->rdllink, &ep->rdllist);
+        ep_pm_stay_awake(epi);
+    }
 }
 ```
 
-###### `ep_scan_ready_list`: 遍历完若链表非空则唤醒等待者
+> `ep_item_poll`获取具体的事件类型，用于写回到 `epitem`的events属性中。
+>
+> ```c
+> static __poll_t ep_item_poll(struct eventpoll *ep, struct epitem *epi, poll_table *pt)
+> {
+>     struct file *file = epi->ffd.file;
+>     __poll_t res;
+> 
+>     if (epi->ffd.revents) {
+>         res = epi->ffd.revents;
+>         epi->ffd.revents = 0;
+>         return res;
+>     }
+> 
+>     // 调用底层设备（比如 socket、pipe、tty 等）的 poll 实现，核心.
+>     res = vfs_poll(file, pt); 
+> 
+>     return res & epi->event.events;
+> }
+> ```
 
-ET 结合NIO能够确保一次性读完Socket中的数据，减少epoll_wait的调用次数，提高效率
+LT：第一次 epoll_wait，fd1 就绪，加到 events 数组里，用户调用系统调用从fd1读取：
 
-LT 因为会保留就绪链表上的节点，因此多个进程阻塞在epoll_wait的系统调用时，会将他们全部唤醒，即惊群。
+- 假如一次性读完，fd1 此时变成未就绪，但是还待在就绪链表里，等待下一次 epoll_wait 时，ep_poll 发现有就绪的，然后开始遍历，遍历的时候先把链表节点断开，然后通过 `ep_item_poll`检查具体是什么事件，发现并没有可读的事件，直接 continue，不会加回去。
+- 假如第二次epoll_wait的时候还是可读的，依然会通知，实现 LT 的语义。
 
-[深入浅出 Linux 惊群：现象、原因和解决方案 - 知乎 (zhihu.com)](https://zhuanlan.zhihu.com/p/385410196)
+ET：必须一次性读完，否则后面再进行 epoll_wait肯定是读不到的。
 
-[再谈 Linux epoll 惊群问题的原因和解决方案 (qq.com)](https://mp.weixin.qq.com/s/xxjCrFH1361iG-srfNL9_Q) 
+###### ET 使新的就绪事件能快速被处理
+
+ET 结合NIO能够确保一次性读完Socket中的数据，减少epoll_wait的调用次数，提高效率。注意必须确保一次性读完。
+
+另外，LT 马上加回去的行为也有影响：数据从内核拷贝到用户空间后，内核不会重新将就绪事件节点添加回就绪队列，当事件在用户空间处理完后，用户空间根据需要重新将这个事件通过 epoll_ctl 添加回就绪队列（又或者这个节点因为有新的数据到来，重新触发了就绪事件而被添加）。从节点被删除到重新添加，这中间的过程是比较“漫长”的，所以新来的其它事件节点能排在旧的节点前面，能快速处理。
+
+不要小看这个处理时序，在高并发系统里，海量事件，每个后来者都希望自己的事件快点被处理，而 et 模式可以一定程度上提高新事件被处理的速度。
+
+同时如果我们仔细观察服务程序的 listen 接口，它有一个 backlog 参数，代表 listen socket 就绪链接的已完成队列的长度，这说明队列是有限制的，当它满了就会返回错误给客户端，所以完全队列的数据当然越快得到处理越好。
+
+所以我们可以观察一下 nginx 的 epoll_ctl 系统调用，除了 listen socket 的操作是 lt 模式，其它的 socket 处理几乎所有都是 et 模式。
+
+###### 遍历完若链表非空则唤醒等待task-> LT 惊群
+
+LT 因为会保留就绪链表上的节点，因此多个进程阻塞在epoll_wait的系统调用时。epoll_wait刚刚取到事件的时候的时候，不可能马上就调用accept去处理，事实上，epoll_wait里面的ep_poll中还没返回，这个时候显然符合“仍然有未处理的事件”这个条件，LT 语义规定，需要通知别的同样阻塞在同一个epoll句柄睡眠队列上的进程 (wq)。
+
+非排它式全部唤醒肯定会有多task一起被唤醒的问题，[排它式唤醒(EPOLLEXCLUSIVE since 4.5)一定程度上可以缓解](#chainwake)，但 LT 仍然有连环唤醒的问题。这些情况有可能是用户不愿意看到的。
 
 ```c
 // ep_scan_ready_list 遍历完成之后...(这将是LT惊群的根源)
@@ -520,27 +668,19 @@ if (!list_empty(&ep->rdllist)) {
 }
 ```
 
-##### 惊群（thundering herd）
+###### 惊群（thundering herd）是问题吗？
 
-当有多个进程或线程在等待同一个事件（比如同一个 socket 上的 `accept`，或 `epoll`/`select` 事件），一旦事件发生，**所有等待的进程或线程都被唤醒**，但最终只有一个能真正处理这个事件，其余的唤醒都是**无效唤醒**，白白消耗了 CPU 资源。这样一来，唤醒和竞争的成本非常高，尤其在高并发场景下，**频繁唤醒多个进程/线程** 会导致性能大幅下降。这就是所谓的 **thundering herd（惊群效应）**：
+当有多个进程或线程在等待同一个事件（比如同一个 socket 上的 `accept`），一旦事件发生，**所有等待的进程或线程都被唤醒**，但最终只有一个能真正处理这个事件，其余的唤醒都是**无效唤醒**，白白消耗了 CPU 资源。这样一来，唤醒和竞争的成本非常高，尤其在高并发场景下，**频繁唤醒多个进程/线程** 会导致性能大幅下降。这就是所谓的 **thundering herd（惊群效应）**。
+
+很多时候，我们并不是害怕"惊群"，我们怕的"惊群"之后，做了很多无用功。相反在一个异常繁忙，并发请求很多的服务器上，为了能够及时处理到来的请求，我们希望能有多"惊群"就多"惊群"，因为根本做不了无用功，请求多到都来不及处理。
 
 - 多进程服务器（如 Nginx、Apache）使用 `accept` 等待客户端连接。
 - 一个新连接到来时，所有阻塞在 `accept` 的进程都被唤醒。
 - 但操作系统只允许一个进程成功 `accept`，其余进程会发现 `accept` 返回 `EAGAIN` 或直接失败，然后又继续休眠等待下次唤醒。
 
-惊群出现的常见位置
-
-- `accept`
-
-- `epoll_wait`（旧内核，水平LT触发时容易）
-- `select` / `poll`（本身也是 LT 触发）
-- 多线程下等待互斥锁、条件变量
-
-> 解决方案
-
 1️⃣ **多进程 `accept`：**
 
-- Linux 2.6 以后引入 `SO_REUSEPORT`，让每个进程拥有独立的监听 socket，避免惊群。
+- Linux 3.9 以后引入 `SO_REUSEPORT`，避免accept惊群。允许多个socket bind/listen在相同的IP，相同的TCP/UDP端口，让每个进程拥有独立的监听 socket，目的是同一个IP、PORT的请求在多个listen socket间负载均衡，安全上，监听相同IP、PORT的socket只能位于同一个用户下。
 - 使用 `accept` 锁：自己用互斥锁mutex保护 `accept`，保证同一时刻只有一个进程调用。
 
 2️⃣ **epoll 驱动：**
@@ -552,9 +692,9 @@ if (!list_empty(&ep->rdllist)) {
 
 - 优化锁设计，减少竞争区域或用条件变量精准唤醒。
 
-##### epoll 事件分类
+##### epoll 标志位
 
-`epoll` 支持多种事件类型，主要有以下几种：
+###### 事件
 
 1. **`EPOLLIN` - 可读事件**
 
@@ -601,9 +741,7 @@ if (!list_empty(&ep->rdllist)) {
 
 - **使用场景**：客户端或服务器检测到连接关闭时，通常会处理此事件并清理资源。
 
-  **例子**：
-
-  - 当客户端断开连接时，服务器会收到 `EPOLLHUP` 事件。此时，服务器应关闭对应的 socket。
+- **例子**：当客户端断开连接时，服务器会收到 `EPOLLHUP` 事件。此时，服务器应关闭对应的 socket。
 
 5. **`EPOLLRDHUP` - 远程挂起事件**
 
@@ -611,27 +749,31 @@ if (!list_empty(&ep->rdllist)) {
 - **适用场景**：它是为了处理 **TCP** 连接中远程关闭（例如客户端关闭连接）时的特定事件。
 - **使用场景**：与 `EPOLLHUP` 类似，应用程序通常通过这个事件来检测到对端已关闭连接，并可以进行相应处理。
 
-6. **`EPOLLET` - 边缘触发（Edge Triggered）**
+6. **`EPOLLPRI` - 优先事件**
+
+- **描述**：表示文件描述符上发生了高优先级的事件。通常这种事件的优先级高于常规的 I/O 事件。
+- **适用场景**：通常用于处理信号量、优先级消息队列等场景。
+
+7. **`EPOLLWAKEUP` - 唤醒事件**
+
+- **描述**：表示 `epoll` 实例在事件等待期间需要被唤醒。
+- **适用场景**：适用于在多线程环境中希望从 `epoll_wait()` 等待事件的线程外部唤醒的情况。
+
+###### 触发类型
+
+1. **`EPOLLET` - 边缘触发（Edge Triggered）**
 
 - **描述**：`EPOLLET` 是边缘触发模式，意味着当文件描述符的状态发生变化时，事件会被触发一次。边缘触发模式相比于传统的水平触发（Level Triggered），能够更加高效地处理 I/O 操作。
 - **适用场景**：在高性能场景中使用，可以避免对文件描述符的重复检查。应用程序需要保证不会丢失事件，并且需要轮询所有事件，直到事件处理完成。
 - **使用场景**：通常与 `EPOLLIN`、`EPOLLOUT` 等事件一同使用。
 
-7. **`EPOLLONESHOT` - 单次触发**
+2. **`EPOLLONESHOT` - 单次触发**
 
 - **描述**：表示文件描述符只会被触发一次事件。处理完事件后，`epoll` 会自动停止监视该文件描述符，直到再次通过 `epoll_ctl` 显式注册为监听状态。
 - **适用场景**：用于那些只需要处理一次事件的场景，如处理某个特定的请求，处理完后不再关心该文件描述符。
 - **使用场景**：一般用于一个事件只处理一次的情况，可以减少事件触发的次数，提高效率。
 
-8. **`EPOLLPRI` - 优先事件**
-
-- **描述**：表示文件描述符上发生了高优先级的事件。通常这种事件的优先级高于常规的 I/O 事件。
-- **适用场景**：通常用于处理信号量、优先级消息队列等场景。
-
-9. **`EPOLLWAKEUP` - 唤醒事件**
-
-- **描述**：表示 `epoll` 实例在事件等待期间需要被唤醒。
-- **适用场景**：适用于在多线程环境中希望从 `epoll_wait()` 等待事件的线程外部唤醒的情况。
+3. `EPOLLEXCLUSIVE`- 如果想使用排他唤醒，在 Linux 4.5 及以后的内核版本中，可通过`EPOLL_CTL`对需要监控的文件描述符（fd）设置`EPOLLEXCLUSIVE`标记来实现，这样 wq 唤醒只会唤醒一个用WQ_FLAG_EXCLUSIVE 标记的 task。
 
 **组合使用的方式**
 
@@ -653,7 +795,7 @@ epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
 
 - 红黑树（为空）：`rb_root` 用来去记录需要被监听的 FD(Socket)
 - 链表（为空）：`list_head`，用来存放已就绪 FD
-  - 创建好了之后，会去调用`epoll_ctl()`函数，此函数将需要监听的数据添加到`rb_root`中去，并且对当前这些存在于红黑树的节点设置回调函数，（同时设置要监听什么类型的事件）当这些被监听的数据一旦准备完成，就会被调用，而调用的结果就是将红黑树的fd添加到list_head中去(但是此时并没有完成)
+- 创建好了之后，会去调用`epoll_ctl()`函数，此函数将需要监听的数据添加到`rb_root`中去，并且对当前这些存在于红黑树的节点设置回调函数，（同时设置要监听什么类型的事件）当这些被监听的数据一旦准备完成，就会被调用，而调用的结果就是将红黑树的fd添加到list_head中去(但是此时并没有完成)
 
 3. 当第二步完成后，就会调用`epoll_wait()`函数，这个函数会去校验是否有数据准备完毕（因为数据一旦准备就绪，就会被回调函数添加到`list_head`中），wait一段时间后(可配置)，如果等待超时，则返回无数据，如果有，则进一步判断当前是什么事件：
 

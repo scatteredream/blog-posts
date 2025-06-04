@@ -363,6 +363,35 @@ autowired默认按类型装 配，同一类型多个实现，用Qualifier指定�
 
 @Autowired 既支持构造方法注入，又支持属性注入和 Setter 注入，而 @Resource 只支持属性注入和 Setter 注入；
 
+##### 为什么属性注入不推荐使用 @Autowired
+
+1. @Autowired 注解注入依赖容器，单元测试不如setter和构造器方便。
+2. 无法实现不可变性：final 属性不支持 @Autowired 注解。
+3. Autowired默认按照type，如果有两个相同type的bean，就会报错，不如 @Resource
+
+```java
+// setter........
+@Autowired(required = false)
+public void setUserService(UserService userService) {
+    this.userService = userService;
+}
+
+// constructor..........
+@Component
+public class MyController {
+
+    private final UserService userService;
+
+    @Autowired
+    public MyController(UserService userService) {
+        this.userService = userService;
+    }
+}
+
+```
+
+
+
 #### 简单类型注入依赖@Value
 
 需要注入的属性上 写value
