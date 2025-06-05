@@ -33,6 +33,20 @@ categories: 项目
 - 集成 SpringBoot。通过[自定义注解](#annotation)，提供者自动扫描并注册服务 Bean，消费者自动注入[代理对象](#proxy)。自定义 starter 实现[自动装配](#autoconfig)。
 - 参考 Dubbo 实现 [SPI](#spi)，支持[序列化](#spi1)、[服务发现](#spi2)等的动态扩展，实现与类型解耦的[单例缓存](#cache)，减少大量冗余的对象创建。
 
+## 为什么做 RPC
+
+1、首先，目前的应用大部分都是分布式/微服务架构，通常各个模块之间都是通过RPC来进行调用的，所以我认为自己写一个RPC项目可以有更加深入的理解RPC的一个原理；
+
+2、其次的话，在写RPC项目的过程中，学会了对Zookeeper、Netty的使用，包括对动态代理、负载均衡、序列化算法的实现，以及对SpringBoot框架的扩展和自动配置的理解。
+
+## RPC 优化瓶颈
+
+1. 网络传输
+2. 序列化：CPU密集型操作——复杂序列化格式（如XML）或大数据量会消耗大量CPU资源，增加延迟。二进制更加高效 <u>Kryo</u>
+3. 客户端策略：熔断与重试引入额外开销，负载均衡不均匀。<u>一致性哈希</u>
+4. 资源管理、内存泄漏：高并发内存分配导致频繁GC，停顿时间过长，<u>单例池</u>
+5. 协议设计、编解码：底层可用 HTTP/2。低效的消息边界解析会增加CPU消耗。<u>lengthBasedFrameDecoder</u>
+
 ## Netty/NIO
 
 Java NIO（New I/O）是 Java 1.4 引入的非阻塞 I/O API，提供了基于通道（Channel）、缓冲区（Buffer）和选择器（Selector）的异步非阻塞编程模型。它允许单线程处理多个连接，显著提升了高并发场景下的性能。
@@ -1525,11 +1539,118 @@ StressTest.testSayHello                           ss       3      0.058 ±    0.
 - 准确性高，目前大多数性能压测都是使用jmh
 - 缺点就是代码入侵
 
+
+
+# 压测优化
+
+![image-20250605135734528](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250605135734528.png)
+
+优化点1 hessian的 ByteArrayOutputStream 局部缓存（ThreadLocal），将会显著减少 GC 压力，提升吞吐。
+
+优化点2 线程池调优，Dubbo内部进行了很多线程池调优。
+
+优化点3 零拷贝，但是性能几乎不变。（WHY？）
+
+# 问题的解决
+
+## 序列化
+
+1.     Kryo线程不安全，因此要放到 ThreadLocal，并且要提前把嵌套在序列化内部的类注册到Kryo上。[KryoSerialization.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/serialization/impl/KryoSerialization.java#L29)
+
+2.     Gson原生不能序列化class对象，需要注册一个TypeAdapter完成 JsonElement 和 Class 对象的互转 [ClassCodec.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/serialization/impl/JsonSerialization.java#L24)
+
+3.     Protostuff提前分配好Buffer，避免每次进行序列化都需要重新分配buffer内存空间。[ProtoStuffSerialization.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/serialization/impl/ProtostuffSerialization.java#L23)
+
+4.     Hessian可以把ByteArrayOutputStream和BAIS放到ThreadLocal进行复用，不要每次都new。
+
+## SPI
+
+1.     建立双向的映射关系：[SerializationFactory.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/serialization/SerializationFactory.java#30)
+
+**Serialization：**调用者发消息的时候需要根据Properties构建MessageHeader，在header里面序列化方式是一个byte(type)，因此需要构建一个**nameToTypeMap**。而在真正进行序列化的时候需要根据消息头的byte获取到其实例对象，实例对象通过SpiExtensionFactory进行获取，又需要name作为参数。因此需要**typeToNameMap**。最终的解决方案是在静态代码块中使用反射框架Reflections进行操作，方便地找到所有Serialization的子类。
+
+2.     面向对象：[ServiceDiscovery.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/discovery/ServiceDiscovery.java) [ServiceRegistry.java](https://github.com/scatteredream/netty-rpc/blob/ec9b3e776668a05be14ed7fa4db583af176cb81c/rpc-framework-core/src/main/java/com/wxy/rpc/core/registry/ServiceRegistry.java)
+
+**ServiceDiscovery/Registry从接口改换成抽象类**：两边都需要启动客户端，原来的想法是从实现类的有参构造注入ip，**注入的同时启动客户端**，这样确实可以直接根据Properties提供对应的注入好的对象，但是这样就不支持动态扩展了，因为SPI的ExtensionLoader只支持无参构造。
+
+那么就想着用一个方法注入（没错就是setter），但是问题来了，接口只支持常量，如果你在接口里面定义一个setter肯定是没办法注入的，那在实现类里通过setter注入呢？可以是可以了，但是你在实际使用的时候肯定都是拿着ServiceDiscovery对象（多态），因此父类对象没法调用子类的setter。
+
+所以说最后就利用抽象类的特性：抽象程度不如接口那么高，正好可以定义一个变量，父类里面实现setter的，子类就可以通过setter注入IP地址，同时不影响多态。
+
+3.     SPI：ExtensionLoader的实现
+
+有点绕：我们需要通过父类/接口的class来构造对应的ExtensionLoader，这应该是一个单例，所以需要使用我们构造的Holder进行获取（classToLoaderMap.computeIfAbsent）。
+
+得到之后就根据key来获取对应实例，从**keyToInstanceMap**.computeIfAbsent(key,()->**createExtension(key)**)）里面拿取。这就走到了下一步，我们首先应该将key和对应的class做好映射，即**keyToClassMap**，那么这就需要我们从文件里读取对应的键值对，然后通过等号右边的全限定名，class.forName 获取class对象，装满keyToClassMap。
+
+映射做好了，拿到class对象：
+
+**classToInstanceMap**.computeIfAbsent(clazz,k->clazz.getDeclaredConstructor().newInstance()); （这个结果赋值给extension）
+
+至此，**createExtension**返回了(T) extension，填充到**keyToInstanceMap**里面
+
+## 负载均衡的实现
+
+一致性哈希
+
+## Spring自定义注解
+
+bean定义的扫描：自定义registrar、里面用扫描器扫描。
+
+## Arthas 
+
+### 检测 CPU 飙高
+
+thread 查看仪表板
+
+thread 73 查看 tid=73的线程，查看调用栈，定位到死循环cpu飙高。
+
+### 监控方法调用
+
+`watch com.example.MyService doSomething '{params, returnObj, cost}' -x 3`
+
+- 这条命令是在不打断程序运行的前提下，**偷偷看一下这个方法到底接收了什么参数、返回了什么结果、用了多久**。中间是个ognl表达式
+
+`doSomething("张三", 18);`:
+
+```yaml
+@WatchCondition: class=com.example.MyService, method=doSomething
+ts=2024-06-05 15:20:00; [cost=12ms]
+params[0]: "张三"
+params[1]: 18
+returnObj: "Hello 张三, age: 18"
+```
+
+`trace com.example.MyService doSomething`
+
+- 查看方法内部每一层的调用耗时，找性能瓶颈
+
+`tt -t com.example.MyService doSomething`
+
+- 记录并回放方法调用
+
+ognl 表达式可以实时修改变量。
+
+### 排查 JVM 
+
+- dashboard (Thread GC 内存)
+- jvm 查看 jvm 配置
+- vmoption -l 查看jvm XX 参数
+
+### 类加载情况
+
+是否加载、类加载器是否冲突、加载了几个版本
+
+`sc -d com.example.MyService`
+
+
+
 # 差异化
 
 在自定义 RPC 框架时，与 Dubbo 这样的成熟框架实现差异化需要从设计理念、功能特性、适用场景等多个维度进行创新。以下是一些可能的差异化方向，分为核心优化、扩展场景和新兴技术整合三类：
 
-## **核心架构与性能优化**
+## 核心架构与性能优化
+
 1. **更轻量的设计**
    - **去中心化架构**：Dubbo 依赖注册中心（如 Zookeeper、Nacos），可设计为无注册中心的点对点通信（如基于 DNS 或静态配置），降低运维复杂度。
    - **零依赖核心**：剥离非必要模块（如监控、配置中心），核心库仅保留序列化、网络通信和容错，适合嵌入式场景（如 IoT 设备）。
@@ -1544,9 +1665,8 @@ StressTest.testSayHello                           ss       3      0.058 ±    0.
    - **自定义二进制协议**：对比 Dubbo 的默认 Hessian2/JSON，可支持 FlatBuffers/Cap'n Proto 等零拷贝序列化，延迟降低 20%-40%。
    - **多协议混合路由**：根据请求特征动态选择协议（如大文件走 HTTP/2，高频小包走自定义二进制协议）。
 
----
+## 垂直场景深度适配
 
-## **垂直场景深度适配**
 1. **边缘计算与弱网络**
    - **断网自治模式**：服务节点离线时自动切换为本地存根（如基于 SQLite 缓存），适合移动端/边缘设备。
    - **低带宽优化**：差分序列化（仅传输变化字段），压缩算法动态选择（Zstd/Brotli）。
@@ -1559,9 +1679,8 @@ StressTest.testSayHello                           ss       3      0.058 ±    0.
    - **Kubernetes Native**：直接基于 Service Account 做服务发现，替代独立的注册中心。
    - **Serverless 适配**：冷启动优化（预热请求池）、按调用计费（动态伸缩实例）。
 
----
+## 开发体验与可观测性
 
-## **开发体验与可观测性**
 1. **开发者友好设计**
    - **DSL 定义接口**：类似 Kotlin 的 suspend RPC 函数，生成客户端代码，避免手动定义 Stub。
    - **交互式调试**：内置请求重放、Mock 服务器（类似 Postman for RPC）。
@@ -1574,9 +1693,8 @@ StressTest.testSayHello                           ss       3      0.058 ±    0.
    - **WebAssembly 运行时**：客户端逻辑用 WASM 编写，跨语言一致性（对比 Dubbo 的多语言 SDK 维护成本）。
    - **IDE 插件**：IntelliJ/VSCode 插件直接生成接口 Mock 数据。
 
----
+## 差异化对比表示例
 
-## **差异化对比表示例**
 | 特性           | Dubbo 3.x                 | 自定义 RPC 框架差异化点                |
 | -------------- | ------------------------- | -------------------------------------- |
 | **服务发现**   | 依赖 Nacos/Zookeeper      | 基于 Kubernetes Endpoints 或无中心 DNS |
@@ -1585,7 +1703,8 @@ StressTest.testSayHello                           ss       3      0.058 ±    0.
 | **移动端支持** | 无官方优化                | 差分序列化 + 断网自治模式              |
 | **调试工具**   | 依赖第三方工具            | 内置请求重放与 IDE 集成                |
 
-## **实施建议**
+## 实施建议
+
 1. **优先聚焦痛点场景**：例如选择 Dubbo 在 IoT 领域资源占用高的短板，针对性优化。
 2. **兼容性设计**：提供 Dubbo 协议适配层，降低迁移成本。
 3. **开源社区策略**：差异化功能作为扩展插件（如 WASM 运行时），吸引特定场景用户。
