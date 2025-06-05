@@ -1051,3 +1051,29 @@ public class ClassLoading {
 很显然在加载main方法后，静态变量不管父类还是子类的都执行了，然后才是父类和子类的的普通变量和构造器。这是因为，当要创建子类这个对象时，发现这个类需要一个父类，所以把父类的.class加载进来，然后依次初始化其普通变量和初始化代码块，最后其构造器，然后可以开始子类的工作，把子类的.class加载进来，在做子类的工作。
 
 另外在 Java 中子类中都会有默认的调用父类的默认构造函数即super() 如果父类声明了有参构造函数，那么如果没有显式声明无参构造，子类就会爆出语法错误，无法调用父类的无参构造。
+
+# NoClassDefFoundError vs ClassNotFoundException
+
+`LinkageError` 表示 JVM 在加载类时，发现类与已有的类结构存在冲突或不兼容的情况。**类在链接（Linking）过程中发生了问题**。 
+
+`NoClassDefError`: 类在编译时存在于 classpath，但是运行时却找不到这个类了。
+
+> 排查时应检查运行环境的 classpath 设置、jar 包完整性和版本、类加载器可见性，以及静态初始化代码是否异常
+
+> 该错误通常发生在类的隐式加载过程中，如使用 new 关键字创建实例或调用方法时触发类加载，或者在执行静态代码块或初始化静态字段时失败（例如静态初始化块抛出异常），触发 ExceptionInInitializerError，进而引发 NoClassDefFoundError；
+
+```java
+public class SomePanel extends Panel {
+    static int CALC_VALUE = ValueCalcUtils.calcValue(); // calcValue 抛异常
+    ... // new 对象就会发生 NoClassDefError 的问题
+```
+
+- classpath 配置错误或缺失，导致运行时找不到对应的类或 jar 包；
+- jar 包冲突或版本不一致，导致加载了错误版本的类或类文件损坏；
+- 可能程序的启动脚本覆盖了原来的 classpath 环境变量；
+- 某些类对某些类加载器不可见
+
+另外一种就是编译完之后，手动删除了 class 字节码，再运行肯定就找不到了
+
+`ClassNotFoundException`: 受检异常，JVM 尝试去加载一个实际在 classpath 并不存在的类。通常由显式调用 Class.forName() 等方法加载类时抛出。
+

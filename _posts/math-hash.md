@@ -265,15 +265,32 @@ JDK 中的 `HashMap` 是通过哈希函数来计算键的哈希值，并将其�
 
 #### 误判率
 
-幸运的是，布隆过滤器有一个可预测的误判率（FPP）：
+幸运的是，布隆过滤器有一个可预测的误判率（fpp）：
 
 <img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241111133418275.png" alt="image-20241111133418275" style="zoom: 33%;" />
 
 - n 是已经添加元素的数量；
 - k 哈希的次数；
 - m 布隆过滤器的长度（如比特数组的大小）；
+- 下图为 (k,fpp) 的关系图，m固定，随着 k 的增大，fpp先增大后减小，最小值出现在 k = m ln2 / n。
+  - 插入n也就是`expectedInsertions`多了，要想维持原来的 `fpp`，就必须增大 k 来减少哈希冲突，或者增大m
+
+
+![image-20250605232127505](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250605232127505.png)
 
 极端情况下，当布隆过滤器没有空闲空间时（满），每一次查询都会返回 true 。这也就意味着 m 的选择取决于期望预计添加元素的数量 n ，并且 m 需要远远大于 n 。
+
+- **`expectedInsertions` 越大**，为了保持相同的 `fpp`，所需的 bit 数组也越长（`m` 增大）。
+
+- **`fpp` 越小**（越精确），需要更多的 bit 数组和哈希函数来降低冲突风险。
+
+- `expectedInsertions` 和 `fpp` 是你在初始化布隆过滤器时必须设定的两个指标，系统根据这两个值计算出 `m` 和 `k`。
+
+
+
+![image-20250605223715973](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250605223715973.png)
+
+
 
 
 
