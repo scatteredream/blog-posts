@@ -46,13 +46,19 @@ categories: 项目
 
 <mark>登录功能</mark>：使用 redis token + 拦截器，<u>登录滑动窗口限流</u>。
 
-[商户缓存](#cache)：进入主页，先从Redis中读出商户分类信息，若Redis中为空则向MySQL中读取，并写入Redis中。主页店铺分类信息为常用信息，应使用Redis避免频繁读取数据库，然后就是缓存的使用。
+[商户缓存](#cache)：进入主页，先从Redis中读出商户分类信息，若Redis中为空则向MySQL中读取，并写入Redis中。主页店铺分类信息为常用信息，应使用Redis避免频繁读取数据库，然后就是缓存的使用，延迟双删 + (canal+MQ 监控 binlog 异步重试删除)。
 
 [<mark>秒杀</mark>](#seckill)：先用令牌桶进行限流，放行之后异步下单，先运行Lua脚本：先判断库存够不够，再判断是否下过单，若未下过单，才能扣减redis库存和sadd成员，判定具备购买资格。
 
-订单预扣兜底：可以lua脚本里面写一条预扣订单记录和zset补偿订单id表，定时任务扫描补偿回滚。lua 脚本生成一个全局id作为订单id，存到补偿表里。随后把订单信息发送到MQ，消费端失败重试到一定次数则回滚redis。不管怎么样，只要MQ接到这个订单了后面处理完就要把其从补偿id表里删除。
+**订单预扣兜底**：可以lua脚本里面写一条预扣订单记录和zset补偿订单id表，定时任务扫描补偿表回滚。lua 脚本生成一个全局id作为订单id，存到补偿zset里。一开始订单状态肯定是pending。
 
-前端轮询订单的status。订单一开始是pending，超时或者失败重试3次 failed，处理成功则 success
+**MQ**：MQ 处理成功则设置 status = success，失败则 status = failed 然后提前回滚库存相关，不管怎么样，成功或者失败都会把zset里的order_id给删掉，这样补偿zset里的id肯定都是pending状态了。（LUA2）
+
+**定时任务**：订单状态肯定都是pending，那么把这些超时的设置 status = failed，然后都给回滚掉，最后删除zset里的order_id。（LUA3）
+
+**前端**轮询订单接口的status。订单一开始是pending，超时兜底或者失败重试3次 failed，处理成功则 success。
+
+- 一查到 failed/success 就删除预扣订单记录就返回结果，避免堆积（TTL也可以）。（LUA4）
 
 [<mark>帖子点赞</mark>](#like)：用户浏览博客时，可以对博客进行点赞，点赞过的用户id，写入到Redis缓存中（zset：用户IDmember，点赞时间score）博客页并展示点赞次数和点赞列表头像，展示点赞列表时，注意点赞列表（id）按时间（score）排序，早的排在前面，SQL语句应拼接order By field (id = 1,2,3,4,5) 。
 
@@ -729,9 +735,18 @@ ZADD stock:recovery {timestamp} {order_id}
 > **定时任务扫描补偿** 
 
 - 启动定时任务（如每分钟），扫描 `stock:recovery` 中超时（如 >5min）的 `order_id`。
-- 检查预扣记录是否存在（`EXISTS stock:lock:{order_id}`）：
-  - **存在**：说明 MQ 未成功处理，然后使用 → **回滚库存**（`INCR` 库存）并清理记录。
-  - **不存在**：说明 MQ 端处理结束这个订单（可能是结果） → 删除 补偿 zset 里面的元素。
+  - score < currentTime - 5分钟 的元素。
+
+- 检查预扣订单状态（` hget stock:lock:{order_id} status `）：
+  - LUA：检查状态：只能是 pending，然后 **回滚库存**（`INCR` 库存）并清理记录，并设置 status 为 failed，从 zset 里删除 orderid。
+  - 只能是 pending。
+
+> 定时任务：XXL-Job
+
+- 通过 **订单 id Hash + 分片参数(shardIndex+shardTotal)** 实现 XXL-Job 分布式调度：利用了 `hashCode` 做一致性分片，确保每个调度实例处理自己的“责任订单”
+  - zset 1w 条数据，每页大小是 100 条，但是分页只是为了性能。
+  - 而哈希分片的作用就在于让数据真正归属于某个实例处理，分而治之，避免重复处理。
+- 使用lua脚本做回滚操作
 
 #### MQ
 
@@ -766,7 +781,7 @@ MQ 这边本身支持 concurrency，不过用默认的 1 就好，我们手动�
 lua脚本对库存（string）执行了减1操作，对集合（set）进行了add操作
 
 1. 指数退避重试机制（订单id唯一保证幂等性）
-2. **补偿机制：最终一致性兜底**。如果重试到达一定次数就变成死信，死信监听器接受消息之后出发redis回滚，回滚的时候除了库存和购买者set，记得删除 redis 里面的预扣订单。在超时之前，提前完成回滚操作，上个订单就算他丢失。
+2. **补偿机制：最终一致性兜底**。如果重试到达一定次数就变成死信，死信监听器接受消息之后出发redis回滚，回滚的时候除了库存和购买者set，记得设置预扣订单状态为failed。在超时之前，提前完成回滚操作。
 
 回滚的幂等性：可以加一个类似于分布式锁的操作，`SETNX rollback:<id> true` 成功才继续，如果 `rollback:<id>` 已存在，说明已经补偿过一次，就直接跳过。（TTL：回滚窗口+一段时间的安全期）
 
@@ -805,11 +820,11 @@ MQ消息堆积：使用 CallerRunsPolicy()，一般就是nack太多或者是消�
 所以我们要改进一下，如何改进呢？其实很简单：
 
 - 让前端在提交订单后，显示一个“排队中”（这里返回订单会包含orderid）。
-- 同时，前端隔三秒请求一次 (检查用户和商品是否已经有订单) 的接口，如果得到订单已经处理完成的消息，页面跳转抢购成功。就是在后端单开一个查询接口，这里面放一个map，存储orderid到orderStatus的映射。
-  - 获取状态：pending就返回pending，success/failed就返回 remove()
-  - 提交订单之后，设定状态为pending
-  - 如果mq监听器成功落库，则设定状态为success
-  - 如果mq监听器落库失败，则设定状态为failed，并且将失败订单落库，然后回滚redis
+- 同时，前端隔半秒请求一次 (检查用户和商品是否已经有订单) 的接口，如果得到订单已经处理完成的消息，页面跳转抢购成功。就是在后端单开一个查询接口，查询redis里预扣订单的状态：pending就返回pending，success/failed就返回remove的值。
+  - 提交订单之后，设定状态为pending。
+  - 下面两种状态最后都要删除 zset 的 order_id，表明已经处理完了，不要让定时任务对订单执行超时逻辑。
+    - 如果mq监听器成功落库，则设定状态为success，删除 zset 的 order_id。
+    - 如果mq监听器落库失败，设定状态为failed 然后回滚redis，删除 zset 的 order_id，将失败订单落库。
 
 
 ## <span id="like">点赞、排行榜</span>
