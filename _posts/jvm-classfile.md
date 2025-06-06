@@ -1077,3 +1077,132 @@ public class SomePanel extends Panel {
 
 `ClassNotFoundException`: 受检异常，JVM 尝试去加载一个实际在 classpath 并不存在的类。通常由显式调用 Class.forName() 等方法加载类时抛出。
 
+# 泛型 类型擦除
+
+ `public <R, ID> R getAvoidHotspotInvalidUsingMutex(String keyPrefix, ID id, Class<R> clazz, Function<ID, R> dbFallback) {}`
+
+| 泛型声明方式         | 擦除后的类型 | 说明                      |
+| -------------------- | ------------ | ------------------------- |
+| `<T>`                | `Object`     | 无上界时默认擦除为 Object |
+| `<T extends Number>` | `Number`     | 擦除为上界类型            |
+| `List<String>`       | `List`       | 泛型参数全部擦除          |
+
+| 泛型信息             | 编译后保留？       | 能否在运行时获取？ |
+| -------------------- | ------------------ | ------------------ |
+| 类型参数（如 T）     | ❌ 被擦除           | ❌                  |
+| 字段/方法的泛型签名  | ✅ Signature 属性中 | ✅（通过反射）      |
+| 实例化泛型的类型信息 | ❌（如 List）       | ❌                  |
+
+```java
+public class Box<T> {
+    public T value;
+}
+public class Box {
+    public Object value;
+}//.class 文件中会额外保留一段 Signature 信息：Signature: LBox<TT;>;
+```
+
+可以用 `javap -verbose` 或反射 API 展示泛型签名的字节码内容
+
+如在代码中定义`List<Object>`和`List<String>`等类型，在编译后都会变成`List`，[JVM](https://zhida.zhihu.com/search?content_id=165127076&content_type=Article&match_order=1&q=JVM&zhida_source=entity)看到的只是List，而由泛型附加的类型信息对JVM是看不到的。
+
+```java
+public class Test {  
+
+    public static void main(String[] args) {  
+
+        ArrayList<String> list1 = new ArrayList();  
+        list1.add("1"); //编译通过  
+        list1.add(1); //编译错误  
+        String str1 = list1.get(0); //返回类型就是String  
+
+        ArrayList list2 = new ArrayList<String>();  
+        list2.add("1"); //编译通过  
+        list2.add(1); //编译通过  
+        Object object = list2.get(0); //返回类型就是Object  
+
+        new ArrayList<String>().add("11"); //编译通过  
+        new ArrayList<String>().add(22); //编译错误  
+
+        String str2 = new ArrayList<String>().get(0); //返回类型就是String  
+    }  
+
+}
+```
+
+类型检查就是针对引用的，谁是一个引用，用这个引用调用泛型方法，就会对这个引用调用的方法进行类型检测，而无关它真正引用的对象。
+
+```java
+ArrayList<Object> list1 = new ArrayList<Object>();  
+list1.add(new Object());  
+list1.add(new Object());  
+ArrayList<String> list2 = list1; //编译错误
+```
+
+实际上，在第4行代码的时候，就会有编译错误。那么，我们先假设它编译没错。那么当我们使用`list2`引用用`get()`方法取值的时候，返回的都是`String`类型的对象（上面提到了，类型检测是根据引用来决定的），可是它里面实际上已经被我们存放了`Object`类型的对象，这样就会有`ClassCastException`了。所以为了避免这种极易出现的错误，Java不允许进行这样的引用传递。（这也是泛型出现的原因，就是为了解决类型转换的问题，我们不能违背它的初衷）。
+
+## 自动类型转换
+
+因为类型擦除的问题，所以所有的泛型类型变量最后都会被替换为原始类型。
+
+既然都被替换为原始类型，那么为什么我们在获取的时候，不需要进行强制类型转换呢？
+
+看下`ArrayList.get()`方法：
+
+```text
+public E get(int index) {  
+
+    RangeCheck(index);  
+
+    return (E) elementData[index];  
+
+}
+```
+
+可以看到，在`return`之前，会根据泛型变量进行强转。假设泛型类型变量为`Date`，虽然泛型信息会被擦除掉，但是会将`(E) elementData[index]`，编译为`(Date)elementData[index]`。所以我们不用自己进行强转。当存取一个泛型域时也会自动插入强制类型转换。假设`Pair`类的`value`域是`public`的，那么表达式：
+
+```text
+Date date = pair.value;
+```
+
+也会自动地在结果字节码中插入强制类型转换。
+
+## instanceof
+
+因为类型擦除之后，`ArrayList<String>`只剩下原始类型，泛型信息`String`不存在了。
+
+那么，编译时进行类型查询的时候使用下面的方法是错误的
+
+```text
+if( arrayList instanceof ArrayList<String>)
+```
+
+## 泛型在静态方法和静态类中的问题
+
+泛型类中的静态方法和静态变量不可以使用泛型类所声明的泛型类型参数
+
+举例说明：
+
+```text
+public class Test2<T> {    
+    public static T one;   //编译错误    
+    public static  T show(T one){ //编译错误    
+        return null;    
+    }    
+}
+```
+
+因为泛型类中的泛型参数的实例化是在定义对象的时候指定的，而静态变量和静态方法不需要使用对象来调用。对象都没有创建，如何确定这个泛型参数是何种类型，所以当然是错误的。
+
+但是要注意区分下面的一种情况：
+
+```text
+public class Test2<T> {    
+
+    public static <T >T show(T one){ //这是正确的    
+        return null;    
+    }    
+}
+```
+
+因为这是一个泛型方法，在泛型方法中使用的T是自己在方法中定义的 T，而不是泛型类中的T。

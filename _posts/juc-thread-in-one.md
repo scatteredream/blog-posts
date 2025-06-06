@@ -74,6 +74,103 @@ categories: juc
 
 对于计算密集型，频繁的上下文切换开销很大
 
+### 不用多线程如何应对高并发
+
+#### 协程（Coroutine）与纤程（Fiber）
+
+**核心优势**：用户态轻量级线程，切换成本极低（纳秒级），单进程可创建数万协程。
+
+**Go 语言的 Goroutine**
+
+- 特点：
+  - 由 Go runtime 调度，比系统线程（OS Thread）轻量 1000 倍以上。
+  - 自动处理 I/O 阻塞，当 Goroutine 遇到网络请求时，runtime 会暂停该协程并调度其他协程。
+
+```go
+func handleRequest(conn net.Conn) {
+    // 非阻塞处理请求，Goroutine自动切换
+    buf := make([]byte, 1024)
+    for {
+        n, err := conn.Read(buf)
+        if err != nil { break }
+        // 处理请求...
+        conn.Write([]byte("Response"))
+    }
+}
+
+func main() {
+    ln, _ := net.Listen("tcp", ":8080")
+    for {
+        conn, _ := ln.Accept()
+        go handleRequest(conn) // 每个请求一个Goroutine，无需手动管理线程
+    }
+}
+```
+
+
+
+#### 事件驱动跟非阻塞IO
+
+明确定义 Reactor、Handler、多路复用器等组件	聚焦于 I/O 事件处理（网络编程、服务器架构）
+
+**核心思想**：通过事件循环监听多个 I/O 事件，配合非阻塞操作实现单线程处理大量连接。
+
+1. **Reactor 模式的单线程实现**
+   - **案例**：Redis 的单线程事件循环
+     Redis 通过`epoll`（Linux）或`kqueue`（BSD）多路复用器监听所有客户端连接，事件触发时直接在主线程处理请求，避免多线程切换开销。
+   - 关键技术：
+     - 非阻塞套接字（`socket.setblocking(false)`）
+     - 事件多路复用器（`select/poll/epoll`）
+     - 单线程事件循环（持续监听事件队列）
+2. **Node.js 的事件驱动模型**
+   - 基于 V8 引擎的单线程架构，通过事件循环处理 HTTP 请求、数据库操作等异步任务。
+   - **适用场景**：I/O 密集型服务（如 API 网关、实时通信），避免 CPU 密集型任务阻塞事件循环。
+
+Netty（网络框架）、Redis 事件循环
+
+> 1. **单 Reactor 单线程**
+>    - Reactor 和 Handler 在同一个线程中运行，适合简单场景。
+>    - **缺点**：Handler 阻塞会影响整个系统。
+>    - 案例：redis早期
+> 2. **单 Reactor 多线程**
+>    - Reactor 单线程监听事件，将事件分发给线程池中的 Handler 处理。
+>    - **案例**：早期 Nginx 的事件处理模型。
+> 3. 多 reactor。
+>    - **Nginx 的进程模型**
+>      - **架构**：1 个 master 进程 + N 个 worker 进程（通常等于 CPU 核心数）
+>      - 核心机制：
+>        - 每个 worker 进程是单线程，内部通过`epoll`处理数万连接。
+>        - master 进程负责管理 worker 进程，接收新连接后通过 “惊群效应” 优化分发给某一 worker。
+>      - **优势**：避免多线程锁竞争，利用多核 CPU，单 worker 进程故障不影响整体服务。
+>    - **Redis 6.0 后的多 Reactor 优化**
+>      - 早期版本采用单 Reactor 单线程，6.0 引入多 Reactor 线程处理网络 I/O，计算仍在主线程。
+>      - **配置示例**：`io-threads-do-reads yes` + `io-threads 4`（4 个 Reactor 线程），提升多核利用率。
+> 4. **主从 Reactor 多线程**
+>    - 主 Reactor 处理客户端连接事件，从 Reactor 处理 I/O 事件，Handler 由线程池处理。
+>    - **案例**：Netty 的 NioEventLoopGroup 机制，提升多核 CPU 利用率。
+
+#### **硬件层面应对：负载均衡**
+
+通过反向代理或负载均衡器（如 nginx、LVS、F5）将并发请求分发到多个后端实例：
+
+- 即使单个实例是单线程，也可以多个实例协作完成高并发处理
+
+#### 限流 + 排队模型 (MQ)
+
+在单线程系统中可以借助**队列+令牌桶/漏桶算法**来限流，应对高并发：
+
+- 高并发请求先排队，如：
+  - `Disruptor` 环形队列（虽然它本身常用于多线程，但也可单线程使用）
+  - `BlockingQueue` + 单线程处理（如单线程消费任务）
+- 超出容量则立即失败或拒绝服务
+
+**典型应用**：消息队列（MQ）内部其实就是单线程顺序处理
+
+#### **数据库层优化**
+
+- 大部分业务高并发是数据库成为瓶颈
+- 即使是单线程服务，只要合理做缓存（如 Redis）、预计算、降级，也能支撑较高的 QPS
+
 ### 易混淆
 
 #### 并发/并行

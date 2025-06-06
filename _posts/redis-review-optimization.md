@@ -48,7 +48,7 @@ categories: 项目
 
 [商户缓存](#cache)：进入主页，先从Redis中读出商户分类信息，若Redis中为空则向MySQL中读取，并写入Redis中。主页店铺分类信息为常用信息，应使用Redis避免频繁读取数据库，然后就是缓存的使用，延迟双删 + (canal+MQ 监控 binlog 异步重试删除)。
 
-[<mark>秒杀</mark>](#seckill)：先用令牌桶进行限流，放行之后异步下单，先运行Lua脚本：先判断库存够不够，再判断是否下过单，若未下过单，才能扣减redis库存和sadd成员，判定具备购买资格。
+[<mark>秒杀</mark>](#seckill)：先用令牌桶进行限流，放行之后异步下单，先运行Lua脚本：先判断库存够不够，再判断是否下过单，若未下过单，才能扣减redis库存和sadd成员，判定具备购买资格。「Lua执行过程中如果错误或是宕机，无法回滚，因此跟acid的原子性不一样」
 
 **订单预扣兜底**：可以lua脚本里面写一条预扣订单记录和zset补偿订单id表，定时任务扫描补偿表回滚。lua 脚本生成一个全局id作为订单id，存到补偿zset里。一开始订单状态肯定是pending。
 
@@ -1046,7 +1046,16 @@ server.tomcat.max-connections=10000
 
 ------
 
-在1c4g1m带宽的云数据库上，**设置商品数量5000个，同时并发访问10000次**。数据库直接被打挂
+在1c4g1m带宽的云数据库上，**设置商品数量5000个，同时并发访问10000次**。数据库直接被打挂：
+
+Caused by: java.sql.SQLTransientConnectionException: HikariPool-1 - Connection is not available, request timed out after 30073ms. 
+
+表明 HikariCP 连接池在 30073 毫秒（约 30 秒）内未能获取到可用的数据库连接，从而导致请求超时。
+
+连接池配置不合理/数据库负载过高 [解决方法](https://blog.csdn.net/qq_32495261/article/details/117689255)
+
+![image](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/5718317-1ce7a79e5b9c9e93.png)
+
 
 我们改成1000个线程并发，商品库存为500个，**使用常规的非异步下单接口**，吞吐量37.3：
 
@@ -1056,7 +1065,14 @@ server.tomcat.max-connections=10000
 
 ![image](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/5718317-f5f703025a2fe0f0.png)
 
-![image](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/5718317-440730e106c71864.png)
+RabbitMQ：
 
 ![image](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/5718317-440730e106c71864.png)
 
+![image](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/5718317-440730e106c71864.png)
+
+
+
+库存耗尽的时候的日志快照：
+
+![image-20250606134815284](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250606134815284.png)
