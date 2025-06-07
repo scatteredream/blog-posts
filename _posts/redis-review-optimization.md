@@ -455,17 +455,20 @@ JWT：去中心化，服务端压力减小，便于分布式系统使用。基�
 
 **Cache Aside**：
 
+- 更新缓存的优点是每次数据变化时都能**及时地更新缓存**，这样不容易出现查询未命中的情况，但这种操作的**消耗很大**，如果数据需要经过复杂的计算再写入缓存的话，频繁的更新缓存会影响到服务器的性能。如果是写入数据比较频繁的场景，可能会导致频繁的更新缓存却没有业务来读取该数据。
+
 - 选择删除cache，*更新导致的无效写比较多（更新多次但只有最后一次被查询），并且线程安全问题难以解决：**要求数据库和缓存写入都要成功**，此时有可能A更新到v1，线程B突然插进来把缓存更新到v2，最后A把脏数据v1更新到缓存，如果缓存更新涉及多表的查询就更加难以维护。* **cache删除和db更新放入一个事务**
 - **删缓存、更新db的先后顺序**：读未命中、更新操作的互相穿插。读肯定大于更新
   - 选择先更新db后删除cache。导致不一致的情况：读未命中的过程中插进来一个更新操作，最后缓存里是旧数据。
   - *如果反过来，先删cache，更新db过程中进来一个查询的又把旧数据填充到缓存里，最后导致db和cache不一致。*
+  - 最终选择：先删cache后更新db
 - **延迟双删：删完之后，隔段时间再尝试删一次。**
   - 休眠时间：覆盖这个并发的读请求回写的时间（回写窗口） + 几百毫秒
-  - 读写分离：A 对主库写，B读从库的旧数据，因此只需要在一个主从同步的时间基础上加几百ms。
+    - 第一次不删除：读取了一定的脏数据
+  - (读写分离：A 对主库写，B读从库的旧数据，因此只需要在一个主从同步的时间基础上加几百ms。) 不要说这个
   - 保证吞吐量：开个新线程进行异步的延迟双删。ScheduledExecutor.schedule()
-- **如果缓存删除失败怎么办**？（异步重试，维持缓存和数据库的一致性）
-  - 单机可用线程池重试，分布式用MQ
-  - MQ的解决办法：启动canal去订阅数据库的binlog，获得需要操作的数据。在应用程序中，另起一段程序，获得这个订阅程序传来的信息，收到了进行删除缓存操作。[canal](https://scatteredream.github.io/2024/08/14/redis-cluster-canal/#%E7%BC%93%E5%AD%98%E5%90%8C%E6%AD%A5%EF%BC%9ACanal) 
+- **如果缓存删除失败怎么办**？：异步监听删除，只是尝试删除缓存一次，canal监听binlog，遇到update就发消息给MQ，MQ负责删除以及重试
+  - MQ的解决办法：启动canal去订阅数据库的binlog，获得需要操作的数据。脱离业务代码，获得canal传来的信息，收到了发给MQ进删除缓存操作。[canal](https://scatteredream.github.io/2024/08/14/redis-cluster-canal/#%E7%BC%93%E5%AD%98%E5%90%8C%E6%AD%A5%EF%BC%9ACanal) 
     1. 更新数据库数据
     2. 数据库会将操作信息写入binlog日志当中
     3. 订阅程序提取出所需要的数据以及key
@@ -474,15 +477,17 @@ JWT：去中心化，服务端压力减小，便于分布式系统使用。基�
     6. 将这些信息发送至消息队列
     7. 重新从消息队列中获得该数据，重试操作。
 
-| **场景**           | **解决方案**                  | **适用性**               |
-| ------------------ | ----------------------------- | ------------------------ |
-| 瞬时故障           | 同步重试（3次以内）           | 低并发，容忍短暂阻塞     |
-| 缓存服务不稳定     | 异步队列 + 重试（最终一致性） | 高并发，要求最终一致     |
-| 长期不可用         | 降级读数据库 + 告警           | 高一致性要求场景         |
-| 无法接受任何不一致 | 版本号校验 + 同步双写         | 金融、交易等强一致性场景 |
+**多重强一致性方案：**同步删除+ 异步监听+可靠消息删除，缓存时设置过期时间，查询时强制主库查；适合于强制要求数据一致性的情况。
 
-- **如果删除失败以后读脏数据怎么办**？
-  - 写入标记+短ttl：删除失败之后写入一个特殊的key，短ttl，标记这个缓存可能不准确，然后在正常读缓存逻辑之前加上if判断即可，遇到特殊key就直读数据库，统计缓存失败率，可以据此熔断。
+1. **同步删除：**先更新数据库、再删除缓存；之后本链路禁止再查该数据，防止没来得及删缓存就又查到旧缓存数据。
+2. **异步监听：**Canal等组件监听binlog发现有更新时就发可靠MQ删除缓存；二重保证删缓存成功；
+3. **延迟消息校验一致性：**Canal等组件监听binlog，发延迟MQ，延迟若干时间，校验缓存一致性；
+4. **缓存设置合理的TTL：**每次缓存时设置TTL；三重保证删缓存成功；
+5. **强制Redis主库查：**以后查缓存时强制从缓存主库查；因为主从同步有延迟，同时不用担心主库压力大，因为分片集群机制。对一致性敏感的 key 强制读主，其余仍可读从，节省资源。
+
+**如果删除失败以后读脏数据怎么办**？
+
+- 写入标记+短ttl：删除失败之后写入一个特殊的key，短ttl，标记这个缓存可能不准确，然后在正常读缓存逻辑之前加上if判断即可，遇到特殊key就直读数据库，统计缓存失败率，可以据此熔断。
 
 | **场景**                 | **解决方案**                    | **适用性**               |
 | ------------------------ | ------------------------------- | ------------------------ |
@@ -589,6 +594,8 @@ public class Result {
 • 使用乐观锁避免秒杀券超卖，同时提高并发。通过控制事务的粒度以及动态代理保证事务的有效性。使用 Lua 脚本解决秒杀券更新的原子性问题。 Redisson 分布式 锁解决集群环境下一人一单可能导致的并发安全问题。在 3000 并发测试中成功拦截 100%的重复请求
 
 ### 令牌桶限流
+
+> 实际上缓存也可以有限流，如果缓存暂时失效了，就应该在数据库访问操作之前取令牌。
 
 - **令牌生成机制**：系统按固定速率（如 100 个 / 秒）向桶中放入令牌，桶有最大容量（如 1000 个令牌），满后不再生成。
 - **流量处理逻辑**：每个请求需要消耗一个令牌才能被处理，无令牌时请求被拒绝或排队。
@@ -756,11 +763,6 @@ ZADD stock:recovery {timestamp} {order_id}
   - 只能是 pending。
 
 > 定时任务：XXL-Job
-
-- 通过 **订单 id Hash + 分片参数(shardIndex+shardTotal)** 实现 XXL-Job 分布式调度：利用了 `hashCode` 做一致性分片，确保每个调度实例处理自己的“责任订单”
-  - zset 1w 条数据，每页大小是 100 条，但是分页只是为了性能。
-  - 而哈希分片的作用就在于让数据真正归属于某个实例处理，分而治之，避免重复处理。
-- 使用lua脚本做回滚操作
 
 #### MQ
 
@@ -947,6 +949,228 @@ public Result signCount() {
 }
 ```
 
+# 秒杀高可用
+
+## Redis 集群定时任务
+
+### 分片？
+
+> 秒杀的核心特征：
+>
+> - 商品数量有限（比如100件、1000件）
+> - 短时间内请求量极大（可能达到几十万、上百万 QPS）
+> - 并发冲突激烈，目标是“快、准、抢”
+
+秒杀业务下，其实对单个商品的分片是个伪需求，因为商品绝对是限量的，库存少、访问量高，因此分片不是首要问题。秒杀本身库存确实很少，数据量小，Redis 完全放得下，Redis 单节点的性能（10万QPS级别）就足以支撑。
+
+如果有成百上千的商品，那就按照商品 id 进行分片就行了。
+
+### 键值设计
+
+| Key 类型 | 用途                 | Key 名称（下划线是动态变化的，{} 保证在同一个节点里） |
+| -------- | -------------------- | ----------------------------------------------------- |
+| String   | 商品库存数量         | seckill:stock:{**<u>product_id</u>**}                 |
+| Set      | 购买此商品的用户id   | seckill:buyers:{**<u>product_id</u>**}                |
+| Hash     | 订单信息以及状态     | seckill:order:{**<u>product_id</u>**}:<u>order_id</u> |
+| ZSet     | 存预扣订单id和时间戳 | seckill:recovery:{**<u>product_id</u>**}              |
+| Set      | 秒杀商品id           | seckill:products                                      |
+
+#### Redis 定时 Lua 脚本(XXL-Job负责执行)
+
+> Lua 脚本(recovery.lua)
+
+```lua
+-- Lua脚本保证原子性（单节点）
+-- KEYS[1]: 商品id集合key "seckill:products"
+-- KEYS[2]: 预扣zset的前缀 "seckill:recovery:"
+-- KEYS[3]: 订单hash前缀  "seckill:order:"
+-- KEYS[4]: 商品库存前缀   "seckill:stock:"
+-- KEYS[5]: 购买者集合前缀 "seckill:buyers:"
+
+-- ARGV[1]: timestamp
+
+local now = tonumber(ARGV[1])
+
+-- 获取所有商品ID
+local product_ids = redis.call('SMEMBERS', KEYS[1])
+
+local expired_total = 0;
+
+for i, product_id in ipairs(product_ids) do
+    -- 处理商品最多
+    local recoveryKey = KEYS[2] .. '{' .. product_id .. '}'
+
+    -- 5分钟订单过期
+    local expired = redis.call('ZRANGEBYSCORE', 
+        recoveryKey, 
+        '-inf', 
+        now - 5*60*1000
+    )
+    local count = #expired;
+    expired_total = expired_total + count;
+    -- 过期回滚逻辑
+    for _, orderId in ipairs(expired) do
+        local orderKey = KEYS[3] .. '{' .. product_id .. '}' .. orderId
+        local status = redis.call('HGET', orderKey, 'status')
+
+        -- 只处理未完成的订单
+        if status == 'pending' then
+            local buyerId = redis.call('HGET', orderKey, 'buyer_id')
+
+            -- 更新订单状态
+            redis.call('HSET', orderKey, 'status', 'failed')
+
+            -- 库存回滚
+            redis.call('INCR', KEYS[4] .. '{' .. product_id .. '}')
+
+            -- 移除购买者
+            redis.call('SREM', KEYS[5] .. '{' .. product_id .. '}', buyerId)
+        end
+
+        -- 从zset移除
+        redis.call('ZREM', recoveryKey, orderId)
+    end
+    
+end
+
+return expired_total
+```
+
+> XXL-Job 
+
+```xml
+<!-- 引入依赖 -->
+<!-- Spring Data Redis Lettuce -->
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+<!-- XXL-JOB Executor -->
+<dependency>
+  <groupId>com.xuxueli</groupId>
+  <artifactId>xxl-job-core</artifactId>
+  <version>2.3.0</version>
+</dependency>
+
+```
+
+application.yml
+
+```yaml
+spring:
+  redis:
+    cluster:
+      nodes:
+        - redis-node1:6379
+        - redis-node2:6379
+        - redis-node3:6379
+      max-redirects: 3
+    lettuce:
+      pool:
+        max-active: 20
+        max-idle: 10
+        min-idle: 5
+      shutdown-timeout: 100ms
+xxl:
+  job:
+    admin:
+      addresses: http://xxl-job-admin:8080/xxl-job-admin
+    executor:
+      appname: seckill-recovery-executor
+      address:
+      ip:
+      port: 9999
+      logpath: /data/applogs/xxl-job/jobhandler
+      logretentiondays: 30
+
+```
+
+Java 类
+
+```java
+
+@Component
+public class SeckillRecoveryJob {
+
+    @Resource
+    private StringRedisTemplate redisTemplate;
+
+    private static final DefaultRedisScript<Long> SECKILL_SCRIPT;
+
+    static {
+        SECKILL_SCRIPT = new DefaultRedisScript<>();
+        SECKILL_SCRIPT.setLocation(new ClassPathResource("recovery.lua"));
+        SECKILL_SCRIPT.setResultType(Long.class);
+    }
+
+    /**
+     * 任务处理器：每 30 秒执行一次
+     * 调度在 XXL-JOB 管理界面配置：Corn 表达式：0/30 * * * * ?
+     */
+    @XxlJob("seckillRecoveryHandler")
+    public ReturnT<String> execute(String param) throws Exception {
+        long now = System.currentTimeMillis();
+        // KEYS 顺序要和脚本里 KEYS[1]…KEYS[5] 对应
+        List<String> keys = List.of(
+            "seckill:products",
+            "seckill:recovery:",
+            "seckill:order:",
+            "seckill:stock:",
+            "seckill:buyers:"
+        );
+        // ARGV 里只有 timestamp
+        List<String> args = List.of(String.valueOf(now));
+        Long expiredTotal = redisTemplate.execute(seckillRecoveryScript, keys, args.toArray());
+        // 打日志
+        XxlJobLogger.log("本次回收过期订单数 = {}", expiredTotal);
+        return ReturnT.SUCCESS;
+    }
+}
+```
+
+## RabbitMQ 主从
+
+[rabbitmq高可用集群搭建-腾讯云开发者社区-腾讯云](https://cloud.tencent.com/developer/article/2448992)
+
+[如何保证消息队列（RabbitMQ）的高可用？ - 非学无以广才 - SegmentFault 思否](https://segmentfault.com/a/1190000023008259)
+
+RabbitMQ有三种模式：单机模式、普通集群模式、镜像集群模式。
+
+### 单机模式
+
+单机模式就是处于一种demo模式、一般就是自己本地搞一个玩玩，生产环境没有那个哥们会使用单机模式的。
+
+### 普通集群模式
+
+![RabbitMQ普通集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbItWg)
+如上图是普通集群模式
+1、RabbitMQ在多台服务器启动实例、每台服务器一个实例、当你创建queue时、queue（元数据+具体数据）只会落在一台RabbitMQ实例上、但是集群中每个实例都会同步queue的元数据（元数据：真实数据的描述如具体位置等)。
+2、当用户消费时如果连接的是另外一个实例，当前实例会根据同步的元数据找到具体的数据所在的实例从其上把具体数据拉过来消费。
+
+这种方式的缺点很明显，没有做到所谓的分布式、只是一个普通的集群。这种方式在消费数据时要么随机选择一个实例拉去数据、要么固定连接那个queue所在的实例来拉取数据，前者导致一次实例见拉取数据的开销、而后在会导致单实例性能的瓶颈。
+
+而且如果存放数据的queue的实例宕机了、会导致其它实例无法从该实例来拉取数据了，如果你开启了RabbitMQ的持久化功能，消息不一定会丢失，但是得等待这个实例重启后才能继续从该queue拉取数据。
+
+所以总的来说这事就比较尴尬了，就完全没有所谓的高可用一说了，这个方案主要的目的是提高吞吐量的，就是说让集群中的多个节点来服务某个queue的读写操作。
+
+### 镜像集群模式
+
+![RabbitMQ镜像集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbIt3o)
+
+这种集群模式真正达到了RabbitMQ高可用性，和普通集群不一样的是你创建的queue不管是元数据还是里面的具体消息都会存在于所有的实例上。每次写消息时都会把消息同步到每个节点的queue中去。
+
+这种方式的优点在于，你任何一个节点宕机了、都没事儿，别的节点都还可以正常使用。
+
+缺点：
+1、性能开销太大，消息同步到所有的节点服务器会导致网络带宽压力和消耗很严重。
+2、这种模式没有扩展性可言，如果你某个queue的负载很高，你加机器，新增的机器也包含了这个queue的所有数据，并没有办法线性扩展你的queue.
+
+这里在多说下如何开启镜像集群模式？其实开启很简单在RabbitMQ的管理控制台，新增一条策略、这个策略就是开启开启镜像集群模式策略、指定的时候可以指定数据同步到所有的节点，也可以要求同步到指定的节点数量，之后你在创建queue时使用这个策略、就会在动降数据同步到其它节点上去了。
+
+![RabbitMQ开启镜像集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbIt6Q)
+
+
+
 # 分布式锁≠流量削峰
 
 不，光开了分布式锁并不会减少外部打过来的请求数——它只是保证「同一时刻只有一个请求能拿到锁去真正执行业务」，但所有其他请求还是会去 Redis 调用一次 `tryLock()`，只不过拿不到锁而已。所以，分布式锁并不能从源头上降请求量或 Redis 的流量。
@@ -1029,8 +1253,6 @@ CAP 告诉我们：“当系统发生网络分区时（P发生），你必须在
   - 在主备切换时，会阻止客户端写入，直到选举出新主节点，保证强一致。
 
 # [线程池调优](https://scatteredream.github.io/2024/11/30/juc-in-one/#connectpool)
-
-
 
 
 
