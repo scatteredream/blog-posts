@@ -1,6 +1,6 @@
 ---
 name: virtual-machine
-title: 虚拟机
+title: Virtual Machine Monitor/Hype
 date: 2025-01-20
 categories:
 - OS
