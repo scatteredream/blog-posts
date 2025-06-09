@@ -232,28 +232,50 @@ raise(SIGINT);          // 向自己发送信号
 [虚拟化#Memory Virtualization | scatteredream's blog](https://scatteredream.github.io/2025/01/18/408-OS-虚拟化/#Memory-Virtualization) 
 
 - 虚拟地址的作用
+
 - 内存分配:
   - 机制：空闲空间链表节点的分割与合并
   - 物理：Buddy, SLAB「内存池」
     - 空闲空间的管理：内存紧缩，<u>free list</u>(best fit、first fit、next fit、bitmap，内存池)
   - 虚拟：mmap malloc brk
+  
 - 虚拟地址的翻译（重定位）
   - 段式 base+bound, bound varies from each other
   - 页式 fixed bound，
   - 段页式 
   - 多级页表 fill one page with one table, hi-level table points to low-level table
   - TLB：翻译缓存
+  
 - Swap：将物理内存看作虚拟内存的缓存
   - 机制：Page Fault & Disk I/O 
+  
   - 策略：
     - 是否需要SWAP？物理内存充足就没必要开启
+    
     - 具体换**出**哪一页？LRU, FIFO, Random, Second Chance, LRU-K, 2Q, Clock
+    
+      - FIFO：淘汰最先进来的页面。
+    
+      - LRU：淘汰最久未访问的页面。
+    
+      - OPT：每次发生缺页时，淘汰的是未来最长时间内不会被访问的页面。
+    
+      - LRU-2：2个LRU 2Q(改进的LRU-2)
+    
+      - Clock：每个页框都有一个**使用位**（Use Bit），初始为 0。页面访问时，若页面在内存中，将其使用位设为 1。若发生缺页且内存已满，从当前“指针”所指的页面开始检查：
+    
+        - 若使用位为 0：淘汰该页，加载新页，使用位设为 1，指针移动到下一页。
+        - 若使用位为 1：将其置为 0，跳过，指针继续前移。
+    
+        - 重复此过程直到找到使用位为 0 的页。
+    
     - 何时换**出**？被动watermark、主动swappiness>0
+    
     - 一次 I/O 换**出**多少页？ clustering
+    
     - 何时换**入**？lazy aka. <u>demand paging(请求调入)</u>
+    
     - 一次 I/O 只换**入**一页**吗**？prefetching(预取)
-
-
 
 
 
