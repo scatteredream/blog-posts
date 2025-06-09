@@ -42,7 +42,7 @@ categories: 项目
 > - 严格控制数据
 > - 易用性不如MQ
 
-
+> [HA](#ha)
 
 <mark>登录功能</mark>：使用 redis token + 拦截器，<u>登录滑动窗口限流</u>。
 
@@ -995,7 +995,7 @@ public Result signCount() {
 }
 ```
 
-# 高可用
+# <span id="ha">高可用</span>
 
 三大法宝：缓存预热、拆分服务、横向扩展机器。
 
@@ -1198,7 +1198,7 @@ return expired_total
 
 
 
-## RabbitMQ 主从
+## RabbitMQ 高可用
 
 [rabbitmq高可用集群搭建-腾讯云开发者社区-腾讯云](https://cloud.tencent.com/developer/article/2448992)
 
@@ -1210,34 +1210,212 @@ RabbitMQ有三种模式：单机模式、普通集群模式、镜像集群模式
 
 单机模式就是处于一种demo模式、一般就是自己本地搞一个玩玩，生产环境没有那个哥们会使用单机模式的。
 
-### 普通集群模式
+### Classic Queue 
+
+#### 普通集群模式（无高可用）
 
 ![RabbitMQ普通集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbItWg)
 如上图是普通集群模式
 1、RabbitMQ在多台服务器启动实例、每台服务器一个实例、当你创建queue时、queue（元数据+具体数据）只会落在一台RabbitMQ实例上、但是集群中每个实例都会同步queue的元数据（元数据：真实数据的描述如具体位置等)。
 2、当用户消费时如果连接的是另外一个实例，当前实例会根据同步的元数据找到具体的数据所在的实例从其上把具体数据拉过来消费。
 
+##### 优缺点
+
 这种方式的缺点很明显，没有做到所谓的分布式、只是一个普通的集群。这种方式在消费数据时要么随机选择一个实例拉去数据、要么固定连接那个queue所在的实例来拉取数据，前者导致一次实例见拉取数据的开销、而后在会导致单实例性能的瓶颈。
 
 而且如果存放数据的queue的实例宕机了、会导致其它实例无法从该实例来拉取数据了，如果你开启了RabbitMQ的持久化功能，消息不一定会丢失，但是得等待这个实例重启后才能继续从该queue拉取数据。
 
-所以总的来说这事就比较尴尬了，就完全没有所谓的高可用一说了，这个方案主要的目的是提高吞吐量的，就是说让集群中的多个节点来服务某个queue的读写操作。
+所以总的来说这事就比较尴尬了，就完全没有所谓的高可用一说了，这个方案主要的目的是**提高吞吐量**的，就是说让集群中的多个节点来服务某个queue的读写操作。
 
-### 镜像集群模式
+##### 使用
+
+- 多台机器（如 node1、node2、node3）
+- 每台安装 RabbitMQ，Erlang cookie 一致（`/var/lib/rabbitmq/.erlang.cookie`）
+- 主机名互通 + 开放端口（5672、15672、25672）
+
+```bash
+# 所有节点配置 hostnames
+sudo hostnamectl set-hostname node1
+# 启动 node1 为独立节点
+sudo systemctl start rabbitmq-server
+
+# node2、node3 加入集群
+# 停止 rabbitmq app
+rabbitmqctl stop_app
+# 加入集群
+rabbitmqctl join_cluster rabbit@node1
+# 启动
+rabbitmqctl start_app
+
+# 设置磁盘节点（持久元数据）或内存节点 (可选)
+rabbitmqctl set_cluster_name my-cluster
+```
+
+#### 镜像集群模式
+
+> 建立在普通集群基础上，**通过策略（POLICY）配置实现某些队列的多副本同步**，具备**高可用性**。
 
 ![RabbitMQ镜像集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbIt3o)
+
+##### 优缺点
 
 这种集群模式真正达到了RabbitMQ高可用性，和普通集群不一样的是你创建的queue不管是元数据还是里面的具体消息都会存在于所有的实例上。每次写消息时都会把消息同步到每个节点的queue中去。
 
 这种方式的优点在于，你任何一个节点宕机了、都没事儿，别的节点都还可以正常使用。
 
-缺点：
-1、性能开销太大，消息同步到所有的节点服务器会导致网络带宽压力和消耗很严重。
-2、这种模式没有扩展性可言，如果你某个queue的负载很高，你加机器，新增的机器也包含了这个queue的所有数据，并没有办法线性扩展你的queue.
+**低吞吐**：性能开销，每条消息都要复制到所有 mirror 节点，且同步 ack。
+
+**性能瓶颈点**：
+
+- 多副本同步（默认是同步模式）
+- 网络延迟和磁盘写入同步放大
+
+这种模式没有扩展性可言，如果你某个queue的负载很高，你加机器，新增的机器也包含了这个queue的所有数据，并没有办法线性扩展你的queue.
+
+##### 使用
 
 这里在多说下如何开启镜像集群模式？其实开启很简单在RabbitMQ的管理控制台，新增一条策略、这个策略就是开启开启镜像集群模式策略、指定的时候可以指定数据同步到所有的节点，也可以要求同步到指定的节点数量，之后你在创建queue时使用这个策略、就会在动降数据同步到其它节点上去了。
 
 ![RabbitMQ开启镜像集群.jpg](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/bVbIt6Q)
+
+> 额外配置步骤
+
+```bash
+# 所有队列镜像到所有节点
+rabbitmqctl set_policy ha-all "^" '{"ha-mode":"all"}'
+
+# 或者镜像到 2 个节点
+rabbitmqctl set_policy ha-two "^" '{"ha-mode":"exactly","ha-params":2,"ha-sync-mode":"automatic"}'
+```
+
+`ha-mode`：
+
+- `all`: 所有节点
+- `exactly`: 指定数量
+- `nodes`: 指定节点列表
+
+`ha-sync-mode`：
+
+- `automatic`：自动同步（推荐）
+- `manual`：需要手动触发
+
+### Quorum（强一致高可用）
+
+#### 优缺点
+
+**推荐 quorum 队列**，维护简单、强一致。**Raft 一致性协议**保证数据一致，自动选主，推荐用于**持久队列**。
+
+**性能瓶颈点**：
+
+- 每次写入都要经过 Raft 协议投票（多数副本响应）
+- 磁盘写入压力更高（写放大现象）
+
+**优势**：在高并发或节点失效情况下，**延迟更稳定，不易脑裂**。
+
+#### 使用
+
+同上，先将节点加入集群。
+
+然后声明队列为 quorum 队列。
+
+```java
+Map<String, Object> args = new HashMap<>();
+args.put("x-queue-type", "quorum");
+channel.queueDeclare("my-quorum-queue", true, false, false, args);
+
+// 或者在控制台生命也可以
+rabbitmqadmin declare queue name=my-quorum-queue durable=true arguments='{"x-queue-type":"quorum"}'
+```
+
+> 无需设置 policy。
+>
+> 副本数量默认是奇数个（3个节点，2副本才有效）。
+>
+> 自动高可用、自动 leader 选举。
+
+### Stream（高吞吐）
+
+实时日志、事件流、重放需求`stream` ✅
+
+> **RabbitMQ Stream 是官方推出的用于高吞吐量、日志流式、事件驱动架构的队列类型**，支持类 Kafka 的功能。
+
+- 单个节点可支撑**百万级消息/秒**
+- 支持**消息批量拉取、零拷贝传输**
+- 自带**消费位置游标 offset**，可从任意 offset 重播（像 Kafka 一样）
+- 持久化存储，**文件页缓存结构**设计，写入吞吐极高
+
+| 问题点                                              | 详细说明                                                     |
+| --------------------------------------------------- | ------------------------------------------------------------ |
+| ❌ **没有强一致性机制**                              | Stream 队列目前**不使用 Raft 或类似协议**，多副本复制是**异步的、最终一致**，在节点宕机或网络抖动下可能存在短暂数据差异或消息丢失风险。 |
+| ❌ **无主从控制、不可强制顺序消费**                  | 消费者是 Pull 模式，自主决定 offset，**无法全局强制顺序消费**，对于订单这类“按订单处理”的逻辑不适合。 |
+| ❌ **ack 模型为 offset-based，不是 per-message ack** | Stream 使用 Kafka 式的 offset ack，不支持 RabbitMQ 的 fine-grained per-message ack，这意味着某个消息处理失败无法精确重试，只能靠 offset 逻辑回溯，**处理失败的补偿逻辑复杂**。 |
+| ⚠️ **消费语义是 at-least-once**（可能重复）          | Stream 消费语义是默认 at-least-once，需要业务实现幂等，不适合订单“**只能处理一次**”的场景。 |
+| ❌ **没有死信机制、延迟队列机制不完善**              | 与 classic/quorum 队列不同，目前 Stream 不直接支持 DLX、TTL、延迟消息等机制，需要外部管理。 |
+| ⚠️ **客户端 SDK 限制**                               | Stream 使用的是 RabbitMQ 的 **专用客户端**（非 AMQP 0-9-1），不兼容已有 RabbitMQ 生态（如 Spring AMQP、RabbitTemplate），上手成本较高。 |
+
+## RabbitMQ 吞吐
+
+### 多 Quorum 队列 + Sharding（推荐）
+
+> QUORUM 队列
+>
+> - 每个队列 = 一个独立的 Raft 副本组
+> - 保证**消息写入的强一致性**
+>   - 写入前必须得到多数副本的确认（`N/2 + 1`）
+>   - 保障即使挂掉节点也**不会丢消息**
+> - 但每个队列只有一个 leader 能处理写入请求
+> - 单个 quorum 队列 = 单 Leader 复制 + 单写通道
+> - 即使你加了很多 RabbitMQ 节点，只要这个队列的 Leader 没变，写操作都还在一台机器上处理 →**无法横向扩容**。
+
+分片：
+
+- 创建多个 quorum 队列（如 `order-queue-0`, `order-queue-1`, …）
+- 每个队列在集群中独立选主，分布在不同节点。每个队列都可以写入、复制、持久化，吞吐量接近线性提升。
+- 各个 leader **并行处理写入、复制、确认** ➜ 实现高吞吐
+
+| 队列名         | 节点分布 | 被选为 leader 的节点 |
+| -------------- | -------- | -------------------- |
+| order-events-0 | A、B、C  | A                    |
+| order-events-1 | A、B、C  | B                    |
+| order-events-2 | A、B、C  | C                    |
+
+> 按照 `orderId` 或 `userId` 进行 hash 分片，分别写入多个 quorum 队列并发处理。
+
+```
+order-events-0
+order-events-1
+...
+order-events-N
+```
+
+发送时根据 `orderId % N` 路由到不同队列，每个队列独立存在、独立复制、独立 leader，大幅提升吞吐。
+
+```java
+String queueName = "order-events-" + (orderId % SHARD_COUNT);
+channel.basicPublish("", queueName, persistentProps, orderBytes);
+```
+
+### 生产端优化（批量发送 + confirm）
+
+- 使用 publisher confirm（`channel.confirmSelect()`）
+- 开启异步 confirm（通过 `ConfirmListener` 异步回调）
+- 发送时批量处理，减少网络/磁盘压力
+
+### 消费端优化（多线程 + 批量 ack）
+
+- 使用线程池并发消费不同的 Quorum 队列
+- 消费逻辑异步化，确保处理速度跟得上发送速度
+- 使用 `channel.basicAck(tag, true)` 批量 ack
+
+### 将只读订单归档到 Stream Queue（冷热分离）
+
+对于超过一定时间的订单（如 > 5 分钟），可归档到 **Stream 队列**：
+
+- 优点：Stream 吞吐超高、支持 offset 重播
+- 用途：可供日志审计、BI 分析、客服查询
+- Quorum 队列只保存“活跃订单”，减轻主队列压力
+
+
 
 
 
