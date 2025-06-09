@@ -73,6 +73,30 @@ Redirecting：
 
 [并发 | scatteredream's blog](https://scatteredream.github.io/2025/01/24/408-OS-并发/) 
 
+Semaphore 的 P V 操作
+
+```c
+P(Semaphore  s)
+{
+   --s.count;          //表示申请一个资源;
+   if (s.count < 0)   //表示没有空闲资源;
+    {
+        // 调用进程进入等待队列s.queue;
+        // 阻塞调用进程;
+    }
+}
+
+V(Semaphore s )
+{
+ ++s.count;	             //表示释放一个资源；
+ if (s.count <= 0)    //表示有进程处于阻塞状态；
+ {
+     // 从等待队列s.queue中取出一个进程p;
+     // 进程p进入就绪队列;
+ }
+}
+```
+
 ## IPC
 
 > 管道（Pipe）
