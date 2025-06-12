@@ -87,6 +87,8 @@ categories: 项目
    - 避免在 `encode`/`decode` 方法中创建不必要的临时对象（如`String`, `byte[]`, 临时容器）。
    - 尽量直接操作 `ByteBuf` 进行编码，而不是先序列化成 `byte[]` 再写入 `ByteBuf`。
    - 解码时，尽量直接从 `ByteBuf` 反序列化出目标对象，避免中间 `byte[]`。
+   - 读完消息头，检查完剩余字节是否足够，不然就resetIndex
+   - 
 
 #### 请求/响应对象池
 
@@ -1107,7 +1109,7 @@ public static Object remoteCall(ServiceDiscovery serviceDiscovery, RpcClient rpc
 }
 ```
 
-# Spring 部分
+# Spring
 
 服务端的Spring：
 
@@ -1117,103 +1119,19 @@ public static Object remoteCall(ServiceDiscovery serviceDiscovery, RpcClient rpc
 
 <mark>所有的 bean 都已经注册并导入好了，唯一的问题是 RestController 里面，出现 HelloService 字段，需要将其进行替换为代理对象！</mark> 
 
-## Review: Spring Bean 生命周期一览
+## Bean Lifecycle
 
-### <mark>IoC 容器启动过程</mark> 
+### <mark>IoC 容器启动过程</mark>
 
-1. Spring IoC 启动入口：`AnnotationConfigApplicationContext` 或 Spring Boot 的 `SpringApplication.run(...)` 
-
-2. 加载配置类（带 `@Configuration`、`@ComponentScan`、`@Import` 等注解）
-
-3.  **扫描、注册阶段** （由 `ClassPathBeanDefinitionScanner` 完成）
-
-   - 扫描被 `@ComponentScan` 指定的包
-   - 找到带注解的类（如 `@Component`、`@Service`、`@Controller`）
-   - 解析为 `BeanDefinition`，使用 `BeanDefinitionRegistry` 将其注册进`beanDefinitionMap`还未创建对象。
-     - 修改Bean定义：执行所有 `BeanFactoryPostProcessor` 的实现类（如 `PropertySourcesPlaceholderConfigurer`），允许对 `BeanDefinition` 进行修改（例如替换占位符）。
-     - **提前实例化处理器**：注册 `BeanPostProcessor` 实现类（如 `AutowiredAnnotationBeanPostProcessor`），这些处理器需在普通Bean之前初始化，以便后续处理其他Bean的创建。
-     - 初始化消息源以及事件广播器
-
-4. **实例化阶段**（容器对于单例且非懒加载的 Bean）
-
-   对每个要使用的 Bean：
-
-   - （主要是针对懒加载或者`Scope = prototype`）存在性检查：Scope判断（若为单例则检查到单例缓存）以及循环依赖判断（如果当前正在创建就从单例缓存获取原始对象）
-
-   - **实例化**：从 `BeanDefinitionRegistry` 获取` BeanDefinition`，包含类名、作用域、初始化方法等元数据。检查是否存在未满足的依赖（如通过`@DependsOn`指定的前置依赖，或者`@Order`加载顺序）最后**实例化**对象（通过反射或者工厂方法调用`Constructor`创建原始对象）
-   - **依赖注入**： `@Autowired/@Resource` 递归调用`getBean()`获取依赖bean，通过三级缓存（`singletonFactories`、`earlySingletonObjects`、`singletonObjects`）提前暴露对象引用，解决setter的循环依赖。设置好属性。
-
-   - Aware 接口回调：如果实现了 `XXXAware` 接口，则通过 `setXXX` 注入容器底层信息。如名称，类加载器等
-
-   - `BeanPostProcessor`: 每个bean在构建的过程中，Spring都会遍历所有的`BeanPostProcessor`的实现类，调用实现类中的方法，入参为构建好的bean。要实现无感的对bean的处理必须使用 `BeanPostProcessor`。
-
-     | 方法（按照先后顺序）                          | 方法所属                     |
-     | --------------------------------------------- | ---------------------------- |
-     | 1. `Object postProcessBeforeInitialization()` | `BeanPostProcessor`          |
-     | 2. `@PostConstruct` 标注的方法                | JSR-250 规定                 |
-     | 3. `void afterPropertiesSet()`                | `InitializingBean`           |
-     | 4. `init()`                                   | `@Bean (initMethod =  init)` |
-     | 5. `Object postProcessAfterInitialization()`  | `BeanPostProcessor`          |
-
-      **5 是 AOP 动态代理的关键阶段**：Spring 在这里可能会返回代理对象替代原对象
-
-5. **完成容器启动**：触发 `ContextRefreshedEvent`，通知监听器容器已就绪。**此时可以通过 `getBean()` 获取单例 Bean**，如果是懒加载或者`Scope = prototype`的则会在主动调用 `getBean()` 的时候才实例化。
+[IOC容器启动过程](https://scatteredream.github.io/2024/08/15/spring-in-one/#IoC 容器启动过程)
 
 ### Bean 生命周期
 
-1. Bean 实例化(仅为构造出对象)
-
-   - **触发条件**：①容器启动 ②首次请求 Bean 时 `getBean() 或者依赖注入`。
-   - **方式**：通过构造函数或工厂方法创建 Bean 的实例。
-   - **异常**：若依赖无法解析或构造函数抛出异常，Bean 创建失败。
-
-2. 属性赋值 Populate Properties
-
-   - **依赖注入**：通过 `@Autowired`、`@Resource`、XML 配置等方式注入属性。
-   - 处理 `@Value`：解析并注入 SpEL 表达式或占位符的值。
-
-3. Aware 接口回调 与 `BeanPostProcessor `前置处理、初始化、后置处理。
-
-4. 就绪状态
-
-   - Bean 完全初始化，可被应用程序使用。
-   - **Singleton Bean** 会被缓存，后续请求直接获取。
-   - **Prototype Bean** 每次请求创建新实例（无后续销毁步骤）。
-
-5. Bean 对象销毁回调
-
-   - `@PreDestroy` JSR-250
-
-   - `destroy()->`  DisposableBean
-
-   - `close()` @Bean (destroyMethod =  close)
-
-6. Bean 对象销毁
-
-   - **触发条件**：容器关闭时（如 `close()` 方法调用）。
-   - **作用域影响**：仅 Singleton Bean 会执行销毁回调，Prototype Bean 需手动清理。
+[Bean 生命周期](https://scatteredream.github.io/2024/08/15/spring-in-one/#Bean 生命周期)
 
 ### SpringBoot 启动
 
-```java
-SpringApplication.run()
-    ├── 创建 SpringApplication
-    ├── prepareEnvironment
-    ├── createApplicationContext // 创建应用上下文
-    ├── refresh() // AbstractApplicationContext#refresh() 方法 启动 IOC 容器
-        ├── postProcessBeanFactory(beanFactory)
-        ├── prepareBeanFactory(beanFactory)
-        ├── invokeBeanFactoryPostProcessors(beanFactory)
-        ├── registerBeanPostProcessors, initMessageSource/initEventMulticaster 
-        ├── onRefresh (Web容器启动)
-        ├── registerListeners
-        ├── finishBeanFactoryInitialization // 初始化所有非懒加载单例 Bean 
-        └── finishRefresh (发布ContextRefreshedEvent)
-    ├── 调用 CommandLineRunner.run(String... args) ApplicationRunner(String... args)
-    └── ApplicationReady
-```
-
-[由此可见 CommandLineRunner 是在容器启动完成以后执行的。可以实现这个接口的 run 方法来注入参数。](#boot)
+[SpringBoot 启动](https://scatteredream.github.io/2024/08/15/spring-in-one/#SpringBoot%20%E5%90%AF%E5%8A%A8) 
 
 ## <span id="annotation">Spring 扫描自定义注解</span>
 
@@ -1364,181 +1282,11 @@ public Object postProcessAfterInitialization(Object bean, String beanName) throw
 
 
 
-## <span id="autoconfig">SpringBoot 自动装配：自动装配框架内部的 Bean</span>
+## <span id="autoconfig">自动装配</span>
 
-自动装配基于自动装配类，所以要把所有的bean都用bean方法的形式注册到容器中。
+[SpringBoot-自动装配：自动装配框架内部的-Bean](https://scatteredream.github.io/2024/08/15/spring-in-one/#SpringBoot%20%E8%87%AA%E5%8A%A8%E8%A3%85%E9%85%8D%EF%BC%9A%E8%87%AA%E5%8A%A8%E8%A3%85%E9%85%8D%E6%A1%86%E6%9E%B6%E5%86%85%E9%83%A8%E7%9A%84%20Bean) 
 
-包括之前讲的 服务发现、服务注册、代理工厂、BeanPostProcessor、ConfigurationProperties等。
-
-Bean 方法不需要使用Autowired在参数上注解！！！！
-
-### 介绍
-
-[SpringBoot 自动装配原理详解](https://javaguide.cn/system-design/framework/spring/spring-boot-auto-assembly-principles.html) 
-
-自动装配可以简单理解为：**通过注解或者一些简单的配置就能在 Spring Boot 的帮助下实现某块功能。**
-
-- 没有 Spring Boot 的时候，我们写一个 RestFul Web 服务，还首先需要自己写 Configuration 配置类，写 Bean 方法。
-- 但有了 SpringBoot，只需要引入依赖，启动 SpringBootApplication 即可。
-
-> SpringBoot 定义了一套接口规范，这套规范规定：SpringBoot 在启动时会扫描外部引用 jar 包中的`META-INF/spring.factories`文件，将文件中配置的类型信息加载到 Spring 容器（此处涉及到 JVM 类加载机制与 Spring 的容器知识），并执行类中定义的各种操作。对于外部 jar 来说，只需要按照 SpringBoot 定义的标准，就能将自己的功能装置进 SpringBoot。
->
-> ```properties
-> # SpringBoot 2.x  在 META-INF/spring.factories 
-> org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
-> com.example.rpc.RpcServerAutoConfiguration
-> 
-> # SpringBoot 3 在 META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
-> com.example.rpc.RpcServerAutoConfiguration
-> ```
->
-> 没有 Spring Boot 的情况下，如果我们需要引入第三方依赖，需要手动配置，非常麻烦。但是，Spring Boot 中，我们直接引入一个 starter 即可。比如你想要在项目中使用 redis 的话，直接在项目中引入对应的 starter 即可。
->
-> ```xml
-> <dependency>
->     <groupId>org.springframework.boot</groupId>
->     <artifactId>spring-boot-starter-data-redis</artifactId>
-> </dependency>
-> ```
->
-> 引入 starter 之后，我们通过少量注解和一些简单的配置就能使用第三方组件提供的功能了。
-
-### 原理浅析
-
-机制核心 @EnableAutoConfiguration (@SpringBootApplication 的一部分) 
-
-底层通过 @Import(AutoConfigurationImportSelector.class) 加载所有自动配置类（通过 spring.factories 找到） 这个ImportSelector很重要，通过 selectImport
-
-方法扫描获取所有符合条件的类的全限定类名，将这些类注册到 IoC 容器。核心调用路径如下：
-
-`selectImport->getAutoConfigurationEntry->getCandidateConfigurations->SpringFactoriesLoader.loadFactoryNames->loadSpringFactories` 不光是这个依赖下的`META-INF/spring.factories`被读取到，所有 Spring Boot Starter 下的`META-INF/spring.factories`都会被读取到。后边会根据条件进行逐层筛选。
-
-### 示例 创建 starter
-
-> 引入 starter-validation
->
-> @Validated注解加到类上，下面这些注解可以用到 字段、参数
->
-> @NotBlank @Email  @Min(1)  @Max(91)
->
-> @Pattern(regexp = "^[a-zA-Z0-9]{8,16}$",message = "用户名只能是长度在8至16"      + "之间的包含数字和大小写字母的字符串")
-
-```java
-@Validated
-@Data
-@ConfigurationProperties(prefix = "rpc.server")
-public class RpcServerProperties {
-    private String address;private Integer port;private String appName;
-    @Pattern(regexp = "zookeeper|nacos", message = "必须是 nacos或者zookeeper")
-    private String registry;
-    private String transport;private String registryAddr;
-    public RpcServerProperties() throws UnknownHostException {
-        this.address = InetAddress.getLocalHost().getHostAddress();
-        this.port = 8080;
-        this.appName = "provider-1";
-        this.registry = "zookeeper";
-        this.transport = "netty";
-        this.registryAddr = "127.0.0.1:2181";
-    }
-}
-```
-
-pojo 类 + @ConfigurationProperties注解，可在 application.yml 中按照前缀配置属性。
-
-```properties
-rpc.server.app-name=provider-1
-rpc.server.port=9991
-rpc.server.registry=zookeeper
-rpc.server.registry-addr=39.108.66.202:2181
-rpc.server.transport=netty
-# 设置指定包下的日志显示级别 INFO/DEBUG/WARNING/OFF
-logging.level.com.wxy.rpc=info
-```
-
-| 注解                        | 作用                                                         |
-| --------------------------- | ------------------------------------------------------------ |
-| `@ConditionalOnProperty`    | 属性Property，满足一定的条件才生效                           |
-| `@ConditionalOnMissingBean` | 只有没有这个类型的 Bean 时才生效 (用户自定义实现了Bean方法，可以替换这个自动装配的) |
-| `@ConditionalOnClass`       | 类路径下有某个类才生效                                       |
-| `@ConditionalOnBean`        | 依赖的 Bean 存在才生效                                       |
-| `@Primary`                  | 多个同类的 Bean 存在时首选注入                               |
-
-```java
-@Configuration
-@EnableConfigurationProperties(RpcServerProperties.class) // 绑定 pojo 作为 properties
-public class RpcServerAutoConfiguration {
-    
-    @Autowired
-    RpcServerProperties properties;
-
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "rpc.server", name = "registry", havingValue = "zookeeper", matchIfMissing = true)// property 的 registry 字段的 value = zookeeper 才生效，如果配置项不存在也会生效
-    public ServiceRegistry serviceRegistry() {
-        if(properties.get)
-        
-        return new ZookeeperServiceRegistry(properties.getRegistryAddr());
-    }
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "rpc.server", name = "registry", havingValue = "nacos")
-    public ServiceRegistry nacosServiceRegistry() {
-        return new NacosServiceRegistry(properties.getRegistryAddr());
-    }
-
-    @Bean
-    @ConditionalOnMissingBean
-    @ConditionalOnBean({ServiceRegistry.class, RpcServer.class})
-    public RpcServerBeanPostProcessor rpcServerBeanPostProcessor(
-        @Autowired ServiceRegistry serviceRegistry,
-		@Autowired RpcServer rpcServer,
-        @Autowired RpcServerProperties properties) 
-    {
-        return new RpcServerBeanPostProcessor(serviceRegistry, rpcServer, properties);
-    }
-}
-```
-
-例子：添加 `spring-boot-starter-data-redis` 后，可直接注入 `RedisTemplate`。
-
-| 特征         | Starter 模块                                                 |
-| :----------- | :----------------------------------------------------------- |
-| **命名**     | 以 `-spring-boot-starter` 结尾                               |
-| **依赖**     | 包含 `spring-boot-autoconfigure`                             |
-| **自动配置** | 有 `@AutoConfiguration` 类，并注册到 `spring.factories` 或 `AutoConfiguration.imports` |
-| **配置属性** | 包含 `@ConfigurationProperties` 类                           |
-| **功能入口** | 提供开箱即用的 Bean，无需用户手动配置。可通过 `application.properties` 或 `@Bean` 覆盖 Starter 的默认配置。 |
-
-1. 实现自动配置类 AutoConfiguration 
-
-2. 按照 SpringBoot 版本将配置类的全限定名引入指定路径下。
-
-3. 新建 starter 模块，添加依赖
-
-   ```xml
-   <dependencies>
-       <!-- 必须依赖 -->
-       <dependency>
-           <groupId>org.springframework.boot</groupId>
-           <artifactId>spring-boot-autoconfigure</artifactId>
-           <version>${spring-boot.version}</version>
-       </dependency>
-       <!-- 可选：配置注解处理器 -->
-       <dependency>
-           <groupId>org.springframework.boot</groupId>
-           <artifactId>spring-boot-configuration-processor</artifactId>
-           <optional>true</optional>
-       </dependency>
-       <!-- 你的模块核心实现 -->
-       <dependency>
-           <groupId>com.example</groupId>
-           <artifactId>rpc-server-spring-boot</artifactId>
-           <version>1.0.0</version>
-       </dependency>
-   </dependencies>
-   ```
-
-
+[自定义 starter | scatteredream's blog](https://scatteredream.github.io/2024/10/01/spring-boot-starter/) 
 
 
 # 项目使用
@@ -1803,3 +1551,55 @@ ognl 表达式可以实时修改变量。
 3. **开源社区策略**：差异化功能作为扩展插件（如 WASM 运行时），吸引特定场景用户。
 
 通过以上方向，可以在不直接挑战 Dubbo 通用性的前提下，在特定领域（如边缘计算、极致性能、云原生深度集成）建立优势。关键是根据目标用户的实际需求做减法（如移除复杂治理功能）或创新（如内置新型序列化）。
+
+# qa
+
+实现的rpc跟dubbo有什么区别，为什么不用dubbo要用这个rpc？ 
+
+如果把rpc改成分布式架构，应该怎么改 ，哪一部分要改成分本式？
+
+注册中心改成分布式，客户端的接口的幂等性和多个分布式注册中心之间的数据一致性怎么保证或者平衡？
+
+心跳检测是在一个单线程定时器里，这一部分要不要分布式一下？ 
+
+服务端节点应该怎么优雅地上下线？客户端什么时候会拉取最新的服务节点？拉取的是所有的服务节点还是部分服务节点？
+
+为什么？ 客户端和服务端的定时器的区别？ 
+
+rpc为什么要基于tcp？能不能用udp？该怎么改或者定怎样的传输协议，可靠性传输相关的要不要考虑一下？ 
+
+能不能在除了rpc的应用层，在别的层（比如传输层和网络层）做负载均衡？大概该怎么做？
+
+在项目中使用了代理设计模式来简化用户调用流程，请解释一下代理设计模式在该项目中的具体应用和优势。
+
+项目中提到支持多种序列化方式，例如Hessian和son，请说明在选择序列化方式时需要考虑哪些因素并举例说明不同序列化方式的适用场景。
+
+你可以详细解释一下项目中使用的序列化机制的选择和实现方式，并说明在实际应用中如何评估和选择合适的序列化方式。
+
+你可以详细解释一下项目中使用的负载均衡算法的选择和实现方式，并说明在实际应用中如何评估和调整负载均衡策略。
+
+你可以详细解释一下在使用Zookeeper和Redis作为注册中心时，它们各自的作用和优势是什么，并举例说明它们在该项目中的具体应用。
+
+在负载均衡策略中，你提到了轮询和一致性哈希算法，请解释一下这两种算法的原理和适用场景，并说明在该项目中如何实现这些负载均衡策略。
+
+容错机制在分布式系统中非常重要，请详细说明在该项目中引入的容错机制是如何工作的，并举例说明它们如何提高系统的健壮性和可用性。
+
+拦截器层在该项目中被用来实现哪些功能?诗列举一些常见的拦截器类型，并解释它们的作用和如何实现。
+
+在项目中引入了拦截器层，请解释一下在该项目中如何定义和使用拦截器，并说明拦截器在系统中的执行顺序和作用。
+
+SPI层在该项目中被用作基础架构，请解释一下系统SPI和用户SPI的区别和作用，并说明它们在项目中的具体应用场景。
+
+在项目中使用了SPI层来实现高拓展性，请说明一下在该项目中如何定义和使用SPI接口，并解释一下SPI的工作原理和实现方式。
+
+Netty在该项目中被用作什么角色?请解释一下Netty的主要特点和优势，并说明在该项目中为什么选择Netty作为网络通信框架。
+
+你在项目中提到了自定义传输协议数据格式，详细解释一下自定义传输协议的设计思路和实现方式，并说明为什么选择自定义传输协议。
+
+你在项目中提到了高拓展性，请解释一下在该项目中如何实现高拓展性，并举例说明用户如何根据配置策略引入和替换模块。
+
+项目中提到了重试策略，诗解释一下在该项目中如何实现重试策略，并说明如何避免重试导致的潜在问题，例如请求重复执行等。如何保证幂等性?(因为有重试策略)
+
+
+
+请说明一下在该项目中遇到的主要挑战和问题，并解释你是如何解决这些挑战和问题的。

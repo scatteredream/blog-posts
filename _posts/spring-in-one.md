@@ -70,7 +70,7 @@ Spring默认创建**单例**bean，scope="singleton" prototype为多例。
 
 #### bean 创建方式
 
-##### <mark>使用构造方法<mark>
+##### <mark>构造方法<mark>
 
 无参构造器，如果使用构造器进行依赖注入，则走的是有参构造
 
@@ -80,11 +80,11 @@ Spring默认创建**单例**bean，scope="singleton" prototype为多例。
 
 ![image-20241019160109618](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241019160109618.png)
 
-#####  使用实例工厂实例化Bean
+#####  使用工厂实例化Bean
 
 - 先造工厂bean再调用工厂的**实例**方法(return newBean) 造bean
 
-##### <mark>FactoryBean 实例工厂bean<mark>
+##### <mark>FactoryBean 工厂bean</mark>
 
 - 第三方自定义工厂Bean类实现FactoryBean接口，重写方法![image-20241019160946566](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241019160946566.png)
   - getObject 工厂类的returnNewBean方法
@@ -288,7 +288,7 @@ classpath:*.properties 当前模块下所有的配置文件
 
 ## 注解开发
 
-### Quick Start
+### Bean 的定义
 
 #### <mark>定义bean@Component</mark>
 
@@ -298,17 +298,17 @@ classpath:*.properties 当前模块下所有的配置文件
 
 加上对应的bean的id ，不加就要加载字节码class
 
-#### <mark>纯注解开发@Configuration  @ComponetScan</mark>
+#### <mark>纯注解开发@Configuration  @ComponentScan</mark>
 
 ![image-20241019224153002](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241019224153002.png)
 
 获取ctx: `ApplicationContext ctx = new AnnotationConfigApplicationContext(SpringConfig.class)` 
 
-默认xml配置文件只给了beans的命名空间，context还得另外自己加，纯注解开发需要定义一个SpringConfig类，常用的配置都有，不用手动去加命名空间
+默认xml配置文件只给了beans的命名空间，context还得另外自己加，纯注解开发需要定义一个SpringConfig类，常用的配置都有，不用手动去加命名空间 XML out!
 
-XML out!
+和 @Component 的区别是，能进行代理拦截，保证bean是单例的。
 
-### 2. bean管理
+### Bean 的管理
 
 #### 作用范围 @Scope
 
@@ -332,11 +332,9 @@ Instantiate(Constructor)> @Autowired > @PostConstruct
 
 ### DI 自动装配
 
-#### <mark>自动装配@Autowired（引用类型）<mark>
+#### <mark>自动装配@Autowired</mark>
 
-在需要注入依赖的**一个**属性
-
-与配置文件[autowire Attribute of Bean](#autowire)不同，注解Autowired不依赖于setter和有参构造器，直接暴力反射访问private属性，创建对象并注入依赖。 
+在需要注入依赖的**一个**属性，与配置文件[autowire Attribute of Bean](#autowire)不同，注解Autowired不依赖于setter和有参构造器，直接暴力反射访问private属性，创建对象并注入依赖。 
 
 ![image-20241020011345128](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020011345128.png)
 
@@ -571,9 +569,113 @@ DAO没有实现类了，在原始接口上加Component、Repository给ioc容器�
 
 需要引用类型参数直接autowired注入即可，一般是业务类做测试
 
-## BeanDefinition BeanPostProcessor
+## 概念
 
-[Spring-扫描自定义注解](https://scatteredream.github.io/2025/02/03/rpc-interpretation/#Spring-扫描自定义注解) 
+### IoC 容器动作
+
+#### ApplicationContextInitializer: 容器创建后
+
+- IoC容器初始化器，实现 `initialize()`方法（返回 ConfigurableApplicationContext对象）
+- 在spring.factories中配置自定义实现类的全限定名。
+- IOC创建完成后执行，常用于 Environment 环境属性注册。
+
+####  ApplicationListener: 监听容器发布的事件
+
+> 设计模式：观察者模式
+
+ioc容器发布事件后回调，通常用于资源加载和定时任务的发布。
+
+- `onApplicationEvent(ApplicationEvent event)`:
+- 在spring.factories中配置自定义实现类的全限定名。
+
+`ApplicationReadyEvent`, `ApplicationFailedEvent`
+
+### IoC 容器
+
+#### BeanFactory: 容器根接口
+
+主要是bean的创建、配置、依赖注入等功能。
+
+核心方法是 `getBean()`，还包含 `isSingleton()/isPrototype()` `containsBean()`的功能。
+
+getBean(): [spring 循环依赖 | scatteredream's blog](https://scatteredream.github.io/2025/05/25/spring-circle-ref/#源码流程) 
+
+- BeanFactory：根接口
+- AbstractBeanFactory
+- DefaultSingletonBeanRegistry
+- AbstractAutowireCapableBeanFactory
+
+> 委托制：AnnotationConfigServletWebServer<u>ApplicationContext</u> 将bean的创建配置和依赖注入委托给了 DefaultListable<u>BeanFactory</u>
+
+### Bean
+
+#### BeanDefinition: Bean 相关信息
+
+描述bean，包括名称、属性、行为（初始化方法、销毁方法、类名、构造器参数）、实现的接口、添加的注解等。Bean创建之前都要封装成 BeanDefinition 注册到 BeanDefinitionMap 中。
+
+- BeanDefinition
+- ScannedGenericBeanDefinition （标注x类为bean的注解）
+- ConfigurationClassBeanDefinition（标注某个方法的返回值是bean）
+
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250612222012377.png" alt="image-20250612222012377" style="zoom:50%;" />
+
+#### BeanFactoryPostProcessor: BeanFactory 后处理器
+
+BeanFactory 准备好，正式开始Bean创建之前，`postProcessBeanFactory(ConfigurableListableBeanFactory beanFactory) `经常用来新增 BeanDefinition。只要把name bdf传入即可实现注册。
+
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250612223522046.png" alt="image-20250612223522046" style="zoom: 67%;" />
+
+#### BeanPostProcessor
+
+[Spring-扫描自定义注解](https://scatteredream.github.io/2025/02/03/rpc-interpretation/#Spring-扫描自定义注解) 在每个Bean初始化完成之后或者之前都会调用 postProcess<u>Before/After</u>Initialization. 
+
+after: 代理对象
+
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250612224408027.png" alt="image-20250612224408027" style="zoom: 67%;" />
+
+#### Aware
+
+<img src="https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250612223852103.png" alt="image-20250612223852103" style="zoom:50%;" />
+
+## Bean 生命周期
+
+1. Bean 实例化(仅为构造出对象)
+
+   - **触发条件**：①容器启动 ②首次请求 Bean 时 `getBean() 或者依赖注入`。
+   - **方式**：通过构造函数或工厂方法创建 Bean 的实例。
+   - **异常**：若依赖无法解析或构造函数抛出异常，Bean 创建失败。
+
+2. 属性赋值 Populate Properties
+
+   - **依赖注入**：通过 `@Autowired`、`@Resource`、XML 配置等方式注入属性。
+   - 处理 `@Value`：解析并注入 SpEL 表达式或占位符的值。
+
+3. Aware 接口回调 与 `BeanPostProcessor `前置处理、初始化、后置处理。
+
+4. 就绪状态
+
+   - Bean 完全初始化，可被应用程序使用。
+   - **Singleton Bean** 会被缓存，后续请求直接获取。
+   - **Prototype Bean** 每次请求创建新实例（无后续销毁步骤）。
+
+5. Bean 对象销毁回调
+
+   - `@PreDestroy` JSR-250
+
+   - `destroy()->`  DisposableBean
+
+   - `close()` @Bean (destroyMethod =  close)
+
+6. Bean 对象销毁
+
+   - **触发条件**：容器关闭时（如 `close()` 方法调用）。
+   - **作用域影响**：仅 Singleton Bean 会执行销毁回调，Prototype Bean 需手动清理。
+
+## 扫描并注册被注解的类
+
+[基于 Netty 的 RPC 框架 | scatteredream's blog](https://scatteredream.github.io/2025/02/03/rpc-interpretation/#annotation) 
+
+## [IoC容器初始化](#refresh)
 
 # Spring AOP 
 
@@ -686,9 +788,9 @@ public exception 可省略
 
 ### 通知类型
 
-#### 前置@Before
+> 前置@Before
 
-#### 后置@After
+> 后置@After
 
 #### <u><mark>环绕@Around</mark></u> 
 
@@ -701,11 +803,11 @@ public exception 可省略
 - pjp能接原始方法的返回值，类型为Object，强转后可以在给他返回去，思想和动态代理里的案例比较像：利用反射invoke调用可以拿到返回值，**注意修改通知方法的返回值为Object。**没返回值也可以
 - 强制抛Throwable 
 
-#### 得到返回值之后@AfterReturning
+> 得到返回值之后@AfterReturning
 
 和after区别：after只要方法结束即可，不管是得到返回值正常结束还是抛异常。AfterReturning需要得到返回值正常结束才能
 
-#### 抛出异常之后@AfterThrowing
+> 抛出异常之后@AfterThrowing
 
 ### 案例：JUnit 测量业务层接口执行效率
 
@@ -729,7 +831,7 @@ JUnit 测试服务类就private服务出来，`@Autowired`
 
 ` Object proceed()` :环绕 PJP专用，调用原始方法同时返回这个方法的返回值
 
-#### <mark>AOP获取原始方法调用参数<mark>
+#### <mark>AOP获取原始方法调用参数</mark>
 
 ![image-20241020173959692](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020173959692.png)
 
@@ -743,14 +845,14 @@ JUnit 测试服务类就private服务出来，`@Autowired`
 
 args本身是Object数组，拿进来需要转成字符串toString getArgs 然后遍历参数数组，对每个字符串参数trim，再把处理以后的传给proceed
 
-#### AOP获取返回值
+> AOP获取返回值
 
 1. 环绕 pjp proceed 
 2. AfterReturning 注解的returning要和形参名字相同
 
 ![image-20241020175037570](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020175037570.png)
 
-#### AOP接收异常
+> AOP接收异常
 
 1. 环绕 不要往出抛Throwable 内部try-catch
 
@@ -902,21 +1004,21 @@ autowired注入自己的代理后，最后容器中的对象只有一个，而�
 
 [图解Java JDBC和JPA的区别 - 快乐随行 - 博客园 (cnblogs.com)](https://www.cnblogs.com/jddreams/p/14024754.html)
 
-### MySQL
+> MySQL
 
 - InnoDB存储引擎支持事务（SQL语句）
 
-### 原生 JDBC
+> 原生 JDBC
 
 -  注册驱动，
 -  获取Connection，
 -  建立Statement执行SQL语句，Connection可以管理事务（本质是执行SQL语句）
 
-### DataSource数据源
+> DataSource数据源
 
 - 主要用来获取并管理，调度Connection
 
-### 原生 MyBatis (ORM)
+> 原生 MyBatis (ORM)
 
 - 可以调用外部数据源获取Connection，也可以使用原生JDBC来获取，最终这些Connection可以呗SqlSession获取到。
 
@@ -936,7 +1038,7 @@ autowired注入自己的代理后，最后容器中的对象只有一个，而�
   
 ```
 
-### Spring联合MyBatis事务管理
+> **Spring联合MyBatis事务管理**
 
 `SpringManagedTransaction` 打通了 MyBatis 的事务管理、连接管理 和 spring-tx 的 事务管理、连接管理，使得 MyBatis 与 Spring 可以使用统一的方式来管理连接的生命周期 和 事务处理。
 
@@ -952,7 +1054,7 @@ autowired注入自己的代理后，最后容器中的对象只有一个，而�
 
 ## 多线程事务
 
-### javax.sql.Connection
+### Connection
 
 简单地来说，建立`Connection`连接，会消耗数据库系统的如下资源：
 
@@ -1005,13 +1107,11 @@ servlet中获取一个连接.首先,servlet是线程安全的吗?
 
 ### ThreadLocal?
 
-就是为每一个使用该变量的线程都提供一个变量值的副本，是每一个线程都可以独立地改变自己的副本，而不会和其它线程的副本冲
-
-
+就是为每一个使用该变量的线程都提供一个变量值的副本，是每一个线程都可以独立地改变自己的副本，而不会和其它线程的副本冲突
 
 ## 开启步骤
 
-### 业务层**<mark>接口<mark>**为业务方法打开事务@Transactional
+> 业务层**<mark>接口</mark>**为业务方法打开事务@Transactional
 
 ![image-20241020204651727](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020204651727.png)
 
@@ -1019,7 +1119,7 @@ servlet中获取一个连接.首先,servlet是线程安全的吗?
 
 - 接口能够提高复用性，降低耦合
 
-### JdbcConfig创建事务管理器Bean@Bean
+> JdbcConfig创建事务管理器Bean@Bean
 
 ![image-20241020204933459](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020204933459.png)
 
@@ -1027,7 +1127,7 @@ PlatformTransactionManager是Spring规定的，DataSourceTransactionManager可�
 
 要注意，事务管理器的datasource和mybatis用的datasource必须是同一个，不然
 
-### SpringConfig打开事务@EnableTransactionManagement
+> 打开事务@EnableTransactionManagement
 
 ![image-20241020205233232](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020205233232.png)
 
@@ -1045,7 +1145,7 @@ PlatformTransactionManager是Spring规定的，DataSourceTransactionManager可�
 
 有些异常不会触发回滚，需要手动设置一下rollbackFor
 
-### 追加日志
+> 追加日志
 
 try finally结构，finally 记日志功能必定触发
 
@@ -1223,9 +1323,9 @@ exclude排除
 
 ![image-20241021165128160](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241021165128160.png)
 
-## 配置Controller
+## Controller
 
-### 请求Request相关
+### Request
 
 #### 请求映射路径@RequestMapping
 
@@ -1324,7 +1424,7 @@ RequestBody请求体中的数据通常是以JSON、XML等格式发送的，可�
 
 @EnableWebMvc
 
-### 响应Response相关
+### Response
 
 #### 响应页面（跳转页面）
 
@@ -1401,7 +1501,7 @@ POJO转JSON字符串
 
 ![image-20241021225823024](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241021225823024.png)
 
-### REST 风格 
+### REST
 
 **Re**presentational **S**tate **T**ransfer
 
@@ -1433,7 +1533,7 @@ value="/users/{id}"  URL中的{id}和用@PathVariable修饰的方法参数id是�
 
 ![image-20241021232010983](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241021232010983.png)
 
-#### <mark>RESTful 快速开发<mark>
+#### <mark>RESTful 快速开发</mark>
 
 ##### 类级别注解 @RequestMapping
 
@@ -1477,13 +1577,13 @@ RestController PostMapping GetMapping DeleteMapping PutMapping
 
 ### 创建工程
 
-### 整合Config包
+### Config
 
 #### SpringConfig
 
 `Configuration` `ComponentScan` `Import`
 
-##### MyBatisConfig & JdbcConfig
+> MyBatisConfig & JdbcConfig
 
 JdbcConfig：数据源 DataSource Bean
 
@@ -1495,17 +1595,17 @@ MyBatisConfig：sqlSessionFactoryBean
 
 `Configuration` `ComponentScan` `EnableWebMvc`
 
-##### ServletConfig
+> ServletConfig
 
 rootApplicationContext和webApplicationContext
 
 ### 编写后端模块
 
-#### Domain
+> Domain
 
 实体类，User
 
-#### Dao
+> Dao
 
 MyBatis Mapper自动代理，写接口，写方法结合注解
 
@@ -1515,23 +1615,23 @@ MyBatis Mapper自动代理，写接口，写方法结合注解
 
 ![image-20241022135845990](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022135845990.png)
 
-#### Service
+> Service
 
 BookDao@Autowired
 
 dao接口加repository注解（可加可不加）
 
-#### RestController
+> RestController
 
 参数在url中：PathVariable
 
 参数在请求体：RequestBody
 
-#### JUnit 测试 Service
+> JUnit 测试 Service
 
-#### Postman 测试 Controller
+> Postman 测试 Controller
 
-#### Spring 事务激活
+> Spring 事务激活
 
 `JdbcConfig` 里 加PlatformTransactionManager Bean, 接dataSource参数
 
@@ -1568,13 +1668,13 @@ public class Result{
 
 ![image-20241022152253512](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022152253512-1729581786093-1.png)
 
-##### Result.data
+> Result.data
 
 业务方法不同返回数据格式也不同，可能是true false这样的text，也可能是json数据，还可能是json数组，约定将数据封装到<mark>data<mark>字段中
 
 ![image-20241022144637267](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022144637267.png)
 
-##### Result.code
+> Result.code
 
 不同业务方法可能会返回相同的内容，返回一个true可能对应新增，修改，删除的业务方法，加一个识别码<mark>code<mark>字段区分 ，可以约定尾数是0表示失败，尾数是1表示成功：
 
@@ -1600,11 +1700,13 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 ![image-20241022152238169](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022152238169.png)
 
-##### Result.message
+> Result.message
 
 一些业务方法，本来应该返回json，没查到只能返回null，不能直接把null展示给用户看，展示的是message信息
 
-##### Controller 返回值统一设定为 Result
+------
+
+> Controller 返回值统一设定为 Result
 
 将返回值封装到Result中，data
 
@@ -1619,9 +1721,9 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 //data字段是否为null？
 ```
 
-#### 返回数据格式统一 - 异常处理器<mark>@RestControllerAdvice<mark>
+#### 异常处理器<mark>@RestControllerAdvice</mark>
 
-- <mark>类级别注解<mark>
+- <mark>类级别注解</mark>
 
 - 后端抛出的异常如果不处理，就会抛到前端页面，不美观，并且不会返回任何数据，导致<mark>数据不统一<mark> 
 - 要让WebMvcConfig扫到这个Advice类
@@ -1689,7 +1791,7 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 加Configuration注解，继承WebMvcConfigurationSupport类，重写resourceHandler方法
 
-#### <mark>Config包详解<mark> 
+#### <mark>Config包详解</mark> 
 
 ##### ServletContainersInitializerConfig (Servlet容器配置类)
 
@@ -1772,15 +1874,95 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 ![image-20241023191952545](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023191952545.png)
 
+## 拦截器
+
+### Interceptor
+
+![image-20241023193138396](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193138396.png)
+
+#### In Filter
+
+![image-20241023193414214](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193414214.png)
+
+filter在一定是在访问servlet之前，interceptor只能在servlet中， <mark>before Controller<mark>
+
+### 功能类
+
+控制表现层：controller下新建interceptor包，新建一个Interceptor类 **extends HandlerInterceptor** 
+
+注意preHandle返回值和@Component
+
+![image-20241023210048371](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210048371.png)
+
+#### SpringMvcSupport
+
+![image-20241023205518460](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023205518460.png)
+
+addInterceptors 自动注入自定义拦截器
+
+addPathPatterns 加的不是前缀，<mark>是严格的URL匹配<mark>，配/books就拦截对/books发的请求，/books/100就拦截不了
+
+![image-20241023205715345](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023205715345.png)
+
+<mark>preHandle</mark>，yourService，postHandle，afterCompletion 顺序
+
+> 示意图
+
+![image-20241023210636045](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210636045.png)
+
+#### 简化开发-WebMvcConfigurer
+
+![image-20241023210528299](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210528299.png)
+
+已经和Spring接口绑定，侵入性强。
+
+### 拦截方法
+
+#### preHandle
+
+`boolean preHandle(req,resp,handler)`
+
+req和resp是servlet的响应和请求，handler实际上是HandlerMethod，通过getMethod能拿到执行的业务方法的对象（反射）
+
+#### postHandle
+
+`void postHandle(req,resp,handler,modelAndView)`
+
+页面跳转相关。
+
+#### afterCompletion
+
+`void afterCompletion(req,resp,handler,exception)`
+
+能拿到原始业务方法执行过程中的异常
+
+### 拦截链顺序
+
+![image-20241023211911820](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023211911820.png)
+
+拦截顺序，和注册顺序有关系
+
+![image-20241023212439810](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023212439810.png)
+
+如果某个pre返回false，post全部跳过，倒序执行，从最近一个pre返回true的拦截器开始执行afterCompletion
+
+![image-20241023212527269](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023212527269.png)
 
 
-### 容器之间的嵌套关系 + 概念解释 (源码解析)
+
+[万字详解 GoF 23 种设计模式（多图、思维导图、模式对比），让你一文全面理解-CSDN博客](https://blog.csdn.net/penriver/article/details/118571991)
+
+
+
+## Spring MVC 源码分析
+
+### `WebApplicationContext`
 
 ![image-20241022175254007](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022175254007-1729595662475-3.png)
 
 #### <span id="wac">WebApplicationContext(WAC)</span> 
 
-- ApplicationContext(AC) 表示整个 Spring 应用的上下文。WAC是普通AC的扩展，它具有Web应用程序所需的一些额外功能，比如可以<u>get</u>ServletContext或者<u>set</u>ServletContext
+- ApplicationContext(AC) 表示 ioc 容器。WAC是普通AC的扩展，它具有Web应用程序所需的一些额外功能，比如可以<u>get</u>ServletContext或者<u>set</u>ServletContext
 - `Root WAC`在应用启动时首先被加载，并且作为父上下文，供表示层使用，主要负责管理服务层（Service）、数据访问层（DAO）、中间件配置等非 Web 层（表示层）的 Bean
 
 #### <span id="swac">Servlet WebApplicationContext(Servlet WAC)</span> 
@@ -1788,7 +1970,7 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 - `Servlet WAC` 是 `Root WAC` 的**子上下文**，专门用于处理表示层的 Bean 和配置。比如控制器（`Controller`）、视图解析器、拦截器(`Interceptor`)等
 - 每个 `DispatcherServlet` 实例会有一个独立的 `Servlet WAC` 
 
-##### Parent & Child ApplicatitonContext 
+#### Parent & Child ApplicatitonContext
 
 Root WAC 作为 所有 Servlet WAC 的 Parent，DispatherServlet在创建属于自己的ServletContext的getAttribute方法来判断是否存在Root WebApplicationContext。如果存在，则将其设置为自己的parent。这就是父子上下文(父子容器)的概念，getParentBeanFactory。
 
@@ -1863,9 +2045,7 @@ Tomcat创建web应用时，会构建ServletContext对象，根据web.xml中的�
 </web-app>
 ```
 
-
-
-#### ContextLoader<mark>Listener<mark> - 创建 Root WAC
+### ContextLoaderListener - 创建 Root WAC
 
 - 本质就是一个Listener，因此需要在web.xml中注册
 
@@ -1873,7 +2053,7 @@ Tomcat创建web应用时，会构建ServletContext对象，根据web.xml中的�
 
 - 继承了ContextLoader类，见名知意，是用来加载WAC的，有一个WAC参数context，所有方法都是围绕加工这个context字段进行的
 
-##### WebApplicationContext initWAC(ServletContext sc) 
+#### `WebApplicationContext initWAC(ServletContext sc)`
 
 ContextLoaer 接收一个ServletContext参数sc，调用initWAC方法返回加载好的WAC对象this.context
 
@@ -1889,11 +2069,11 @@ ContextLoaer 接收一个ServletContext参数sc，调用initWAC方法返回加�
 
 最终返回 `this.context` 作为 Root WAC
 
-##### WebApplicationContext contextInitialized(ServletContextEvent sce)
+#### `WebApplicationContext contextInitialized(ServletContextEvent sce)`
 
 ContextLoaderListener 能监听Web应用启动或关闭的事件（会修改ServletContext中的参数），触发contextInitializaed/contextDestroyed，创建或销毁Root WAC。
 
-#### Dispatcher<mark>Servlet<mark> - 创建 Servlet WAC
+### DispatcherServlet - 创建 Servlet WAC
 
 - 本质就是一个Servlet，所以需要在web.xml中注册，继承自HttpServlet->HttpServletBean->FrameworkServlet
 
@@ -1927,11 +2107,13 @@ ContextLoaderListener 能监听Web应用启动或关闭的事件（会修改Serv
 
 这两个context都是在ServletContext中，属于dispatcherServlet的上下文是servletWAC，找不到的话就去rootWAC中找
 
-#### <span id="webappinit">替代web.xml，以Java形式配置ServletContext——WebApplicationInitializer</span>
+### <span id="webappinit">Java形式配置ServletContext——WebApplicationInitializer</span>
 
 ![屏幕截图 2024-10-23 133904](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/屏幕截图 2024-10-23 133904.png)
 
-##### ServletContainerInitializer
+> 替代web.xml
+
+#### ServletContainerInitializer
 
 之前，web容器（Tomcat）会根据WEB-INF下的web.xml初始化ServletContext
 
@@ -1939,7 +2121,9 @@ Java EE Servlet 规范定义了这个接口，web容器（Tomcat）启动时根�
 
 **SpringServletContainerInitializer** 是Spring 对其的实现，其onStartup方法会调用 **[WebApplicationInitializer](#webappinit)** 的onStartup(**ServletContext sc**)初始化Web应用
 
-#### SpringMVC Web应用启动流程
+### SpringMVC Web应用启动流程
+
+[Spring MVC启动流程](https://www.cnblogs.com/54chensongxia/p/12522804.html) 
 
 - Tomcat 读取web.xml中 `<context-param>` `<listener>`  然后创建一个全局共享的ServletContext
 - Tomcat 将`<context-param>` `<listener>`转化为键值对，存到ServletContext 
@@ -1949,91 +2133,19 @@ Java EE Servlet 规范定义了这个接口，web容器（Tomcat）启动时根�
   - **FrameworkServlet**主要作用是初始化Spring子容器，设置其父容器，并将其放入ServletContext中；
   - **FrameworkServlet**在调用initServletBean()的过程中同时会触发**DispatcherServlet**的onRefresh()方法，这个方法会初始化Spring MVC的各个功能组件。比如异常处理器、视图处理器、请求映射处理等
 
-[Spring MVC启动流程](https://www.cnblogs.com/54chensongxia/p/12522804.html) 
-
-##### 100% code-based 
+> 100% code-based 
 
 用Java类的形式配置ServletContext，有一些细微差异，Spring这边实现了ServletContainerInitializer接口，注册组件的工作就交给了WebApplicationInitializer：
 
 先根据指定的rootWacConfig配置类（SpringConfig）创建出父容器，父容器作为参数进行Listener的有参构造，最后以<mark>add<mark>Listener的方式注册到ServletContext中。
 
-## 拦截器
-
-### Interceptor
-
-![image-20241023193138396](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193138396.png)
-
-#### In Filter
-
-![image-20241023193414214](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193414214.png)
-
-filter在一定是在访问servlet之前，interceptor只能在servlet中， <mark>before Controller<mark>
-
-### 功能类
-
-控制表现层：controller下新建interceptor包，新建一个Interceptor类 **extends HandlerInterceptor** 
-
-注意preHandle返回值和@Component
-
-![image-20241023210048371](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210048371.png)
-
-#### SpringMvcSupport
-
-![image-20241023205518460](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023205518460.png)
-
-addInterceptors 自动注入自定义拦截器
-
-addPathPatterns 加的不是前缀，<mark>是严格的URL匹配<mark>，配/books就拦截对/books发的请求，/books/100就拦截不了
-
-![image-20241023205715345](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023205715345.png)
-
-<mark>preHandle<mark>，yourService，postHandle，afterCompletion 顺序
-
-#### 示意图
-
-![image-20241023210636045](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210636045.png)
-
-#### 简化开发
-
-![image-20241023210528299](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023210528299.png)
-
-已经和Spring接口绑定，侵入性强。
-
-### 拦截方法参数配置
-
-#### boolean preHandle(req,resp,<mark>handler<mark>)
-
-req和resp是servlet的响应和请求，handler实际上是HandlerMethod，通过getMethod能拿到执行的业务方法的对象（反射）
-
-#### void postHandle(req,resp,<mark>handler<mark>,modelAndView)
-
-页面跳转相关。
-
-#### void afterCompletion(req,resp,<mark>handler<mark>,exception)
-
-能拿到原始业务方法执行过程中的异常
-
-### 拦截链顺序
-
-![image-20241023211911820](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023211911820.png)
-
-拦截顺序，和注册顺序有关系
-
-![image-20241023212439810](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023212439810.png)
-
-如果某个pre返回false，post全部跳过，倒序执行，从最近一个pre返回true的拦截器开始执行afterCompletion
-
-![image-20241023212527269](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023212527269.png)
-
-
-
-[万字详解 GoF 23 种设计模式（多图、思维导图、模式对比），让你一文全面理解-CSDN博客](https://blog.csdn.net/penriver/article/details/118571991)
-
 # Spring Boot
 
-## 入门案例——Web项目
+## 入门案例
 
-### 创建boot模块
+### 创建
+
+> 创建boot模块
 
 [idea创建不了spring2.X版本，无法使用JDK8，最低支持JDK17 ， 如何用idea创建spring2.X版本，使用JDK8解决方案_spring3不支持jdk8-CSDN博客](https://blog.csdn.net/dream_ready/article/details/134639886)
 
@@ -2041,19 +2153,19 @@ SpringBoot2停止维护，SpringBoot3最低Java17
 
 ![image-20241025190302057](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025190302057.png)
 
-### 写控制器类
+> 写控制器类
 
 把controller类写好
 
 ![image-20241025194037167](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025194037167.png)
 
-### 启动app
+> 启动app
 
 ![image-20241025194052846](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025194052846.png)
 
 ### 快速启动
 
-#### 打包—jar
+#### 打包
 
 `package` 之前 `clean` 全部设置为UTF-8参数
 
@@ -2065,17 +2177,17 @@ SpringBoot2停止维护，SpringBoot3最低Java17
 
 jar执行要有入口类，boot打包需要插件才能生成可执行的入口类
 
-## 简述boot
+## boot 依赖管理
 
 ![image-20241025195226537](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025195226537.png)
 
 ### starter 起步依赖
 
-### starter-parent 依赖管理
+> starter-parent 依赖管理
 
 starter-parent：定义了无数jar包的版本管理和依赖管理，减少依赖冲突。只写GA 不写V
 
-### dependencies-辅助功能
+> dependencies-辅助功能
 
 每一个dependency（以web包为例）把真正需要用到的jar包声明，去找parent要即可
 
@@ -2089,13 +2201,13 @@ spring-boot-dependencies:
 
 ![image-20241025201805886](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025201805886.png)
 
-### 替换starter的某个依赖
+### 替换starter的某个依赖: exclusion
 
 依赖排除exclusion，换技术
 
 ![image-20241025202142653](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025202142653.png)
 
-## 配置文件
+## application.yml
 
 ### resources目录下配置文件加载优先级
 
@@ -2113,13 +2225,13 @@ debug>info>warn
 
 ### YAML—(YAML Ain't Markup Language)
 
-#### YAML 简介
+> YAML 简介
 
 Jamel  Camel
 
 ![image-20241025204800590](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025204800590.png)
 
-#### 语法规则
+> 语法规则
 
 ![image-20241025204945594](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025204945594.png)
 
@@ -2135,15 +2247,15 @@ enterprise:
 
 ![image-20241025205033642](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025205033642.png)
 
-### 以Java方式读取yaml配置文件
+### 以Java方式读取yaml
 
-#### 读取单个数据—定义成员变量@Value(${enterprise.subject)
+#### 单个数据—成员变量@Value(${enterprise.subject)
 
 自动赋值
 
 ![image-20241025205805383](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025205805383.png)
 
-#### 读取全部数据—Environment对象
+#### 全部数据—Environment
 
 定义一个Environment，自动装配，将配置中的属性全部遍历:
 
@@ -2151,15 +2263,13 @@ enterprise:
 
 ![image-20241025210024893](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025210024893.png)
 
-#### **自定义对象封装指定数据**@Component@ConfigurationProperties(prefix = enterprise)
+#### pojo类映射到yaml @ConfigurationProperties
 
-可以拿到需要的某个属性的信息(prefix)
-
-在控制器中定义成员变量自动装配，常用
+可以拿到需要的某个属性的信息(prefix)，在控制器中定义成员变量自动装配，常用
 
 ![image-20241025210710013](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025210946272.png)
 
-##### 自定义对象封装数据警告
+> 自定义对象封装数据警告
 
 ![image-20241025211036999](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241025211036999.png)
 
@@ -2302,15 +2412,15 @@ APK作为JAR包的变种，也具有相似的结构：
 
 ![image-20241026144246642](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241026144246642.png)
 
-## 与其他框架整合
+## 框架整合
 
-### Spring Boot X JUnit 
+### JUnit 
 
 ![image-20241026151902777](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241026151902777.png)
 
 ![image-20241026152538674](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241026152538674.png)
 
-#### 测试类注解@SpringBootTest
+> 测试类注解@SpringBootTest
 
 ![image-20241026152650043](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241026152650043.png)
 
@@ -2318,43 +2428,33 @@ SpringBoot启动类：@SpringBootApplication有加载bean的功能，会扫描�
 
 SpringBootTest会自动扫描SpringBootApplication，测试类不在启动类所在包/子包中，需要指定启动类的class文件
 
-### 基于SpringBoot实现SSM整合
+### SSM
 
-#### 整合MyBatis案例
+#### 整合 MyBatis
 
-##### 启动依赖-MyBatis,MySQL
+> 1.启动依赖-MyBatis,MySQL
 
-##### pojo dao @Mapper @MapperScan
+> 2.pojo dao @Mapper @MapperScan
 
 mybatis自动代理注解开发返回的对象就是实体类，所以实体类不用配置，
 
 mybatis注解开发中@Mapper注解取代了bookMapper.xml，对mybatis声明这是一个mapper。
 
-spring-mybatis整合中，mybatis生成mapper的代理对象会以FactoryBean的形式交给Spring容器管理，要让mybatis知道mapper在哪里，就要加@Mapper注解
+spring-mybatis整合中，mybatis生成mapper的代理对象会以FactoryBean交给Spring容器管理，要让mybatis知道mapper在哪里，就要加@Mapper注解
 
 spring-mybatis整合中，不加@Mapper注解，要么配置mapperScannerConfigurer，要么加@MapperScan扫mapper包。
 
-##### application.yml 配置数据源
+> 3.application.yml 配置数据源
 
 ![image-20241026163010546](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241026163010546.png)
 
+#### SSM迁移到SpringBoot
 
-
-#### SSM项目迁移到Spring Boot
-
-TODO 注释前面加TODO 可以有事项清单
-
-##### 配置类全部删除
-
-##### Dao加@Mapper
-
-##### Controller Service不变
-
-##### application.yml 配置端口和数据源
-
-##### 静态资源放到resources/static
-
-###### 静态资源的重定向(JS脚本)
+1. 配置类全部删除
+2. Dao加@Mapper
+3. Controller Service不变
+4. application.yml 配置端口和数据源
+5. 静态资源放到resources/static，静态资源可重定向(JS脚本)：
 
 访问一个web资源，如果直接访问 `localhost:port` 一般会请求一个主页index.html，为了能直接从地址访问资源，创建一个index.html，添加一个跳转的js脚本
 
@@ -2364,25 +2464,21 @@ TODO 注释前面加TODO 可以有事项清单
 </script>
 ```
 
-## Spring Boot 自动装配
-
-[SpringBoot-自动装配：自动装配框架内部的-Bean](https://scatteredream.github.io/2025/02/03/rpc-interpretation/#SpringBoot-自动装配：自动装配框架内部的-Bean) 
-
-[自定义 starter | scatteredream's blog](https://scatteredream.github.io/2024/10/01/spring-boot-starter/) 
-
 ## @SpringBootApplication
 
 `@SpringBootApplication` 是 Spring Boot 的核心注解，它是一个**组合注解**，整合了以下三个关键注解的功能：
 
-### 核心作用
-- **`@Configuration`**  
-  标记当前类为**配置类**，允许通过 `@Bean` 定义 Spring 容器中的组件。
-- **`@EnableAutoConfiguration`**  
-  启用 Spring Boot 的**自动配置机制**，根据项目依赖（如 JDBC、Web、Redis 等）自动配置 Spring 应用。
-- **`@ComponentScan`**  
-  自动扫描**当前包及其子包**下的组件（如 `@Controller`、`@Service`、`@Repository` 等），无需手动注册。
+1. **`@Configuration`**  标记当前类为**配置类**，允许通过 `@Bean` 定义 Spring 容器中的组件。
+2. **`@EnableAutoConfiguration`**  启用 Spring Boot 的**自动配置机制**，根据项目依赖（如 JDBC、Web、Redis 等）自动配置 Spring 应用。
+3. **`@ComponentScan`** 自动扫描**当前包及其子包**下的组件（如 `@Controller`、`@Service`、`@Repository` 等），无需手动注册。
 
-### 典型用法
+| 特性     | Spring Boot (`@SpringBootApplication`) | 传统 Spring                 |
+| -------- | -------------------------------------- | --------------------------- |
+| 配置方式 | 自动配置 + 默认约定                    | 手动 XML 或 Java Config     |
+| 组件扫描 | 自动（默认包扫描）                     | 需显式配置 `@ComponentScan` |
+| 依赖管理 | 通过 Starter 简化                      | 手动管理依赖版本            |
+
+### 用法
 ```java
 @SpringBootApplication
 public class MyApp {
@@ -2395,29 +2491,286 @@ public class MyApp {
 - 启动后会自动初始化 Spring 容器、加载配置、启动内嵌服务器（如 Tomcat）。
 
 ### 配置
-#### 排除特定自动配置
+> 排除特定自动配置
+
 ```java
 @SpringBootApplication(exclude = {DataSourceAutoConfiguration.class})
 ```
 - 例如：项目未使用数据库时，可排除数据源自动配置。
 
-#### 自定义扫描路径
+> 自定义扫描路径 scanBasePackages
+
 ```java
 @SpringBootApplication(scanBasePackages = "com.example")
 ```
 - 默认扫描主类所在包，如需扫描其他包，可通过 `scanBasePackages` 指定
-- 因此，默认情况下，SpringBootApplication修饰的类应该在根目录，确保所有类都能被扫到
+- 因此，默认情况下，SpringBootApplication修饰的类应该在根目录，确保所有类都能被扫到。
 
 ### 常见问题
 - **Q：为什么我的 `@Component` 组件没被扫描到？**  
+  
   A：确保组件位于主类的**同级或子包**下，或通过 `scanBasePackages` 显式指定路径。
-
+  
 - **Q：如何查看生效的自动配置？**  
+  
   A：启动时添加 `--debug` 参数，日志会输出所有自动配置的评估结果。
 
-### 对比传统 Spring
-| 特性     | Spring Boot (`@SpringBootApplication`) | 传统 Spring                 |
-| -------- | -------------------------------------- | --------------------------- |
-| 配置方式 | 自动配置 + 默认约定                    | 手动 XML 或 Java Config     |
-| 组件扫描 | 自动（默认包扫描）                     | 需显式配置 `@ComponentScan` |
-| 依赖管理 | 通过 Starter 简化                      | 手动管理依赖版本            |
+## SpringBoot 启动流程
+
+### `app.run()`
+
+1. `new SpringApplication()`
+   - 确认应用类型（SERVLET、NON、响应式）
+   - 加载 `ApplicationContextInitializer`（包括在 spring.factories 自定义的）
+   - 加载 `ApplicationListener`
+   - 记录主启动类(main所在类)
+2. `run(MyApp.class,args)`
+
+```java
+SpringApplication.run() // 准备Environment PropertySource
+    ├── 创建 SpringApplication
+    ├── prepareEnvironment
+    ├── createApplicationContext // 创建 context 
+    ├── prepareContext() // 设置Environment beanFactory后处理器 main类beanDefinition
+    ├── refresh() // 刷新 IOC 容器 (往里面填充bean)
+    ├── CommandLineRunner.run(String... args) ApplicationRunner(String... args)
+    └── ApplicationReady
+```
+
+由此可见 `CommandLineRunner`是在容器启动完成以后执行的。可以实现这个接口的 `run()` 方法来注入参数。
+
+### <span id="refresh">IoC 容器初始化: `refresh()`</span>
+
+> `AbstractApplicationContext#refresh()`
+
+```java
+refresh() // 刷新 IOC 容器 (往里面填充)
+├── prepareRefresh()    
+├── prepareBeanFactory(beanFactory) //1.给beanFactory设置基本属性(类加载器和enviroment)
+├── postProcessBeanFactory(beanFactory)//2.beanFactory后处理器
+├── invokeBeanFactoryPostProcessors(beanFactory) //3.扫描并注册beanDefinition
+├── registerBeanPostProcessors() // 4.注册 bean 后处理器
+├── initMessageSource(); initEventMulticaster() // 5.事件源的注册
+├── onRefresh() // 6.模板方法, 针对特定的context实现去执行特定逻辑，比如启动tomcat
+├── registerListeners() // 7.event listener 绑定和注册
+├── finishBeanFactoryInitialization() // 8.实例化所有非懒加载单例 Bean
+└── finishRefresh() //9.发布ContextRefreshedEvent, 清除一些缓存
+```
+
+1. 加载配置类（带 `@Configuration`、`@ComponentScan`、`@Import` 等注解）
+
+2.  **扫描、注册阶段** 
+
+    > `invokeBeanFactoryPostProcessors(beanFactory)` 执行beanFactory后处理器
+
+    - （由 `ClassPathBeanDefinitionScanner` 完成）
+    - 扫描被 `@ComponentScan` 指定的包，找到带注解的类（如 `@Component`、`@Service`、`@Controller`）
+    - 解析为 `BeanDefinition`，使用 `BeanDefinitionRegistry` 将其注册进`beanDefinitionMap`还未创建对象。
+      - 修改Bean定义：执行所有 `BeanFactoryPostProcessor` 的实现类（如 `PropertySourcesPlaceholderConfigurer`），允许对 `BeanDefinition` 进行修改（例如替换占位符）。
+      - **提前实例化处理器**：注册 `BeanPostProcessor` 实现类（如 `AutowiredAnnotationBeanPostProcessor`），这些处理器需在普通Bean之前初始化，以便后续处理其他Bean的创建。
+      - 初始化消息源以及事件广播器。 
+
+3. **实例化阶段**（容器对于单例且非懒加载的 Bean）
+
+   > `AbstractAutowireCapableBeanFactory#doCreateBean()`
+
+   对每个要使用的 Bean：
+
+   - （主要是针对懒加载）存在性检查：Scope判断（若为单例则检查到单例缓存）以及循环依赖判断（如果当前正在创建就从单例三级缓存获取原始对象）
+
+   - **实例化**：从 `BeanDefinitionRegistry` 获取` BeanDefinition`，包含类名、作用域、初始化方法等元数据。检查是否存在未满足的依赖（如通过`@DependsOn`指定的前置依赖，或者`@Order`加载顺序）最后**实例化**对象（通过反射或者工厂方法调用`Constructor`创建原始对象）
+
+   - **依赖注入**： `@Autowired/@Resource` 递归调用`getBean()`获取依赖bean，通过三级缓存（`singletonFactories`、`earlySingletonObjects`、`singletonObjects`）提前暴露对象引用，解决setter的循环依赖。设置好属性。
+
+   - Aware 接口回调：如果实现了 `XXXAware` 接口，则通过 `setXXX` 注入容器底层信息。如名称，类加载器等
+
+   - `BeanPostProcessor`: 每个bean在构建的过程中，Spring都会遍历所有的`BeanPostProcessor`的实现类，调用实现类中的方法，入参为构建好的bean。要实现无感的对bean的处理必须使用 `BeanPostProcessor`。
+
+     | 方法（按照先后顺序）                          | 方法所属                     |
+     | --------------------------------------------- | ---------------------------- |
+     | 1. `Object postProcessBeforeInitialization()` | `BeanPostProcessor`          |
+     | 2. `@PostConstruct` 标注的方法                | JSR-250 规定                 |
+     | 3. `void afterPropertiesSet()`                | `InitializingBean`           |
+     | 4. `init()`                                   | `@Bean (initMethod =  init)` |
+     | 5. `Object postProcessAfterInitialization()`  | `BeanPostProcessor`          |
+
+      **5 是 AOP 动态代理的关键阶段**：Spring 在这里可能会返回代理对象替代原对象
+
+4. **完成容器启动**：触发 `ContextRefreshedEvent`，通知监听器容器已就绪。**此时可以通过 `getBean()` 获取单例 Bean**，如果是懒加载或者`Scope = prototype`的则会在主动调用 `getBean()` 的时候才实例化。
+
+## <span id="autoconfig">SpringBoot 自动装配：自动装配框架内部的 Bean</span>
+
+自动装配基于自动装配类，所以要把所有的bean都用bean方法的形式注册到容器中。
+
+包括之前讲的 服务发现、服务注册、代理工厂、BeanPostProcessor、ConfigurationProperties等。
+
+Bean 方法不需要使用Autowired在参数上注解！！！！
+
+### 介绍
+
+[SpringBoot 自动装配原理详解](https://javaguide.cn/system-design/framework/spring/spring-boot-auto-assembly-principles.html) 
+
+自动装配可以简单理解为：**通过注解或者一些简单的配置就能在 Spring Boot 的帮助下实现某块功能。**
+
+- 没有 Spring Boot 的时候，我们写一个 RestFul Web 服务，还首先需要自己写 Configuration 配置类，写 Bean 方法。
+- 但有了 SpringBoot，只需要引入依赖，启动 SpringBootApplication 即可。
+
+> SpringBoot 定义了一套接口规范，这套规范规定：SpringBoot 在启动时会扫描外部引用 jar 包中的`META-INF/spring.factories`文件，将文件中配置的类型信息加载到 Spring 容器（此处涉及到 JVM 类加载机制与 Spring 的容器知识），并执行类中定义的各种操作。对于外部 jar 来说，只需要按照 SpringBoot 定义的标准，就能将自己的功能装置进 SpringBoot。
+>
+> ```properties
+> # SpringBoot 2.x  在 META-INF/spring.factories 
+> org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+> com.example.rpc.RpcServerAutoConfiguration
+> 
+> # SpringBoot 3 在 META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+> com.example.rpc.RpcServerAutoConfiguration
+> ```
+>
+> 没有 Spring Boot 的情况下，如果我们需要引入第三方依赖，需要手动配置，非常麻烦。但是，Spring Boot 中，我们直接引入一个 starter 即可。比如你想要在项目中使用 redis 的话，直接在项目中引入对应的 starter 即可。
+>
+> ```xml
+> <dependency>
+>  <groupId>org.springframework.boot</groupId>
+>  <artifactId>spring-boot-starter-data-redis</artifactId>
+> </dependency>
+> ```
+>
+> 引入 starter 之后，我们通过少量注解和一些简单的配置就能使用第三方组件提供的功能了。
+
+### 原理浅析
+
+机制核心 @EnableAutoConfiguration (@SpringBootApplication 的一部分) 
+
+底层通过 @Import(AutoConfigurationImportSelector.class) 加载所有自动配置类（通过 spring.factories 找到） 这个ImportSelector很重要，通过 selectImport
+
+方法扫描获取所有符合条件的类的全限定类名，将这些类注册到 IoC 容器。核心调用路径如下：
+
+`selectImport->getAutoConfigurationEntry->getCandidateConfigurations->SpringFactoriesLoader.loadFactoryNames->loadSpringFactories` 不光是这个依赖下的`META-INF/spring.factories`被读取到，所有 Spring Boot Starter 下的`META-INF/spring.factories`都会被读取到。后边会根据条件进行逐层筛选。
+
+### 示例 创建 starter
+
+[自定义 starter | scatteredream's blog](https://scatteredream.github.io/2024/10/01/spring-boot-starter/) 
+
+> 引入 starter-validation
+>
+> @Validated注解加到类上，下面这些注解可以用到 字段、参数
+>
+> @NotBlank @Email  @Min(1)  @Max(91)
+>
+> @Pattern(regexp = "^[a-zA-Z0-9]{8,16}$",message = "用户名只能是长度在8至16"      + "之间的包含数字和大小写字母的字符串")
+
+```java
+@Validated
+@Data
+@ConfigurationProperties(prefix = "rpc.server")
+public class RpcServerProperties {
+    private String address;private Integer port;private String appName;
+    @Pattern(regexp = "zookeeper|nacos", message = "必须是 nacos或者zookeeper")
+    private String registry;
+    private String transport;private String registryAddr;
+    public RpcServerProperties() throws UnknownHostException {
+        this.address = InetAddress.getLocalHost().getHostAddress();
+        this.port = 8080;
+        this.appName = "provider-1";
+        this.registry = "zookeeper";
+        this.transport = "netty";
+        this.registryAddr = "127.0.0.1:2181";
+    }
+}
+```
+
+pojo 类 + @ConfigurationProperties注解，可在 application.yml 中按照前缀配置属性。
+
+```properties
+rpc.server.app-name=provider-1
+rpc.server.port=9991
+rpc.server.registry=zookeeper
+rpc.server.registry-addr=39.108.66.202:2181
+rpc.server.transport=netty
+# 设置指定包下的日志显示级别 INFO/DEBUG/WARNING/OFF
+logging.level.com.wxy.rpc=info
+```
+
+| 注解                        | 作用                                                         |
+| --------------------------- | ------------------------------------------------------------ |
+| `@ConditionalOnProperty`    | 属性Property，满足一定的条件才生效                           |
+| `@ConditionalOnMissingBean` | 只有没有这个类型的 Bean 时才生效 (用户自定义实现了Bean方法，可以替换这个自动装配的) |
+| `@ConditionalOnClass`       | 类路径下有某个类才生效                                       |
+| `@ConditionalOnBean`        | 依赖的 Bean 存在才生效                                       |
+| `@Primary`                  | 多个同类的 Bean 存在时首选注入                               |
+
+```java
+@Configuration
+@EnableConfigurationProperties(RpcServerProperties.class) // 绑定 pojo 作为 properties
+public class RpcServerAutoConfiguration {
+    
+    @Autowired
+    RpcServerProperties properties;
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "rpc.server", name = "registry", havingValue = "zookeeper", matchIfMissing = true)// property 的 registry 字段的 value = zookeeper 才生效，如果配置项不存在也会生效
+    public ServiceRegistry serviceRegistry() {
+        if(properties.get)
+        
+        return new ZookeeperServiceRegistry(properties.getRegistryAddr());
+    }
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnProperty(prefix = "rpc.server", name = "registry", havingValue = "nacos")
+    public ServiceRegistry nacosServiceRegistry() {
+        return new NacosServiceRegistry(properties.getRegistryAddr());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean({ServiceRegistry.class, RpcServer.class})
+    public RpcServerBeanPostProcessor rpcServerBeanPostProcessor(
+        @Autowired ServiceRegistry serviceRegistry,
+		@Autowired RpcServer rpcServer,
+        @Autowired RpcServerProperties properties) 
+    {
+        return new RpcServerBeanPostProcessor(serviceRegistry, rpcServer, properties);
+    }
+}
+```
+
+例子：添加 `spring-boot-starter-data-redis` 后，可直接注入 `RedisTemplate`。
+
+| 特征         | Starter 模块                                                 |
+| :----------- | :----------------------------------------------------------- |
+| **命名**     | 以 `-spring-boot-starter` 结尾                               |
+| **依赖**     | 包含 `spring-boot-autoconfigure`                             |
+| **自动配置** | 有 `@AutoConfiguration` 类，并注册到 `spring.factories` 或 `AutoConfiguration.imports` |
+| **配置属性** | 包含 `@ConfigurationProperties` 类                           |
+| **功能入口** | 提供开箱即用的 Bean，无需用户手动配置。可通过 `application.properties` 或 `@Bean` 覆盖 Starter 的默认配置。 |
+
+1. 实现自动配置类 AutoConfiguration 
+
+2. 按照 SpringBoot 版本将配置类的全限定名引入指定路径下。
+
+3. 新建 starter 模块，添加依赖
+
+   ```xml
+   <dependencies>
+       <!-- 必须依赖 -->
+       <dependency>
+           <groupId>org.springframework.boot</groupId>
+           <artifactId>spring-boot-autoconfigure</artifactId>
+           <version>${spring-boot.version}</version>
+       </dependency>
+       <!-- 可选：配置注解处理器 -->
+       <dependency>
+           <groupId>org.springframework.boot</groupId>
+           <artifactId>spring-boot-configuration-processor</artifactId>
+           <optional>true</optional>
+       </dependency>
+       <!-- 你的模块核心实现 -->
+       <dependency>
+           <groupId>com.example</groupId>
+           <artifactId>rpc-server-spring-boot</artifactId>
+           <version>1.0.0</version>
+       </dependency>
+   </dependencies>
+   ```
+
