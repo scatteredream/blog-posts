@@ -12,10 +12,26 @@ tags:
 - bean
 - 注解开发
 categories: spring
-
 ---
 
+> Spring
+>
 
+
+
+# Review: Source Codes Analysis
+
+> [Bean 生命周期](#bean-lifecycle)
+>
+> [IoC 容器初始化](#refresh)
+>
+> [循环依赖](#circle-ref)
+>
+> [SpringMVC 启动流程](#springmvc-init)、[执行流程](#spring-mvc-exec)
+>
+> [SpringBoot 启动流程](#spring-boot-init)
+>
+> [SpringBoot 自动装配](#autoconfig) 
 
 # Spring IoC
 
@@ -400,79 +416,6 @@ public class MyController {
 
 ![image-20241020011844984](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241020011844984.png)
 
-#### <mark>循环依赖</mark>
-
-Spring循环依赖指的是两个或多个Bean之间相互依赖，形成一个环状依赖的情况。简单来说，就是A依赖B，B依赖C，C依赖A，这样就形成了一个循环依赖的环。
-
-Spring循环依赖通常会导致Bean无法正确地被实例化，从而导致应用程序无法正常启动或者出现异常。因此，Spring循环依赖是一种需要尽量避免的情况。
-
-Spring 使用[三级缓存机制](https://scatteredream.github.io/2025/05/25/spring-circle-ref/)部分解决循环依赖问题，但是从 SpringBoot 2.6 开始默认禁止循环依赖，因为这是顶层设计出现问题的表现。 
-
-![](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/633066ae3fcb2fcc117ab142dd90d3da-1730639875106-2.png)
-
-##### 使用构造函数注入
-
-构造函数注入是一种相对保险的方式，因为在实例化Bean时，Spring会检查是否存在循环依赖，并在发现循环依赖时抛出异常，避免死循环。示例代码如下：
-
-```java
-@Component
-public class A {
-    private B b;
-    public A(B b) {
-        this.b = b;
-    }
-}
-@Component
-public class B {
-    private A a;
-    public B(A a) {
-        this.a = a;
-    }
-}
-```
-
-##### 使用@Lazy注解
-
-@Lazy注解可以延迟Bean的实例化，从而避免循环依赖的问题。示例代码如下：
-
-```java
-@Component
-@Lazy
-public class A {
-    @Autowired
-    private B b;
-}
-@Component
-@Lazy
-public class B {
-    @Autowired
-    private A a;
-}
-```
-
-##### 使用 setter 注入
-
-使用setter方法注入也可以解决循环依赖的问题，但要注意可能出现的空指针异常。示例代码如下：
-
-```java
-@Component
-public class A {
-    private B b;
-	@Autowired
-	public void setB(B b) {
-        this.b = b;
-    }
-}
-@Component
-public class B {
-    private A a;
-    @Autowired
-    public void setA(A a) {
-        this.a = a;
-    }
-}
-```
-
 ### 管理第三方Bean
 
 #### <span id="bean"><mark>Config配置类中bean的创建@Bean</mark></span>
@@ -676,6 +619,216 @@ after: 代理对象
 [基于 Netty 的 RPC 框架 | scatteredream's blog](https://scatteredream.github.io/2025/02/03/rpc-interpretation/#annotation) 
 
 ## [IoC容器初始化](#refresh)
+
+## <span id="circle-ref">循环依赖</span>
+
+Spring循环依赖指的是两个或多个Bean之间相互依赖，形成一个环状依赖的情况。简单来说，就是A依赖B，B依赖C，C依赖A，这样就形成了一个循环依赖的环。
+
+Spring循环依赖通常会导致Bean无法正确地被实例化，从而导致应用程序无法正常启动或者出现异常。因此，Spring循环依赖是一种需要尽量避免的情况。
+
+Spring 使用[三级缓存机制](https://scatteredream.github.io/2025/05/25/spring-circle-ref/)部分解决循环依赖问题，但是从 SpringBoot 2.6 开始默认禁止循环依赖，因为这是顶层设计出现问题的表现。 
+
+![](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/633066ae3fcb2fcc117ab142dd90d3da-1730639875106-2.png)
+
+### 解决方式
+
+> 使用构造函数注入
+
+构造函数注入是一种相对保险的方式，因为在实例化Bean时，Spring会检查是否存在循环依赖，并在发现循环依赖时抛出异常，避免死循环。示例代码如下：
+
+```java
+@Component
+public class A {
+    private B b;
+    public A(B b) {
+        this.b = b;
+    }
+}
+@Component
+public class B {
+    private A a;
+    public B(A a) {
+        this.a = a;
+    }
+}
+```
+
+> 使用@Lazy注解
+
+@Lazy注解可以延迟Bean的实例化，从而避免循环依赖的问题。示例代码如下：
+
+```java
+@Component
+@Lazy
+public class A {
+    @Autowired
+    private B b;
+}
+@Component
+@Lazy
+public class B {
+    @Autowired
+    private A a;
+}
+```
+
+> 使用 setter 注入
+
+使用setter方法注入也可以解决循环依赖的问题，但要注意可能出现的空指针异常。示例代码如下：
+
+```java
+@Component
+public class A {
+    private B b;
+	@Autowired
+	public void setB(B b) {
+        this.b = b;
+    }
+}
+@Component
+public class B {
+    private A a;
+    @Autowired
+    public void setA(A a) {
+        this.a = a;
+    }
+}
+```
+
+### 获取单例对象：三级缓存机制
+
+1. **优先查询一级缓存（`singletonObjects`）**
+   - 一级缓存也叫单例池，存储的是**完全初始化**的单例 Bean（例如已注入所有依赖且完成代理增强的对象）。
+   - **作用**：直接获取可用 Bean，避免重复创建。
+   - 优先级最高：如果找到直接返回，不触发后续缓存查询。
+2. **未找到则查询二级缓存（`earlySingletonObjects`）**
+   - 二级缓存存储的是**已实例化但未完成初始化**的 Bean（半成品）。
+   - **作用**：在循环依赖中临时暴露早期引用（例如 A 依赖 B 时，B 可能正在创建中，需引用 A 的半成品）。
+   - 注意：若二级缓存中存在目标 Bean，则直接返回，但此时 Bean 可能尚未完成属性注入或代理。
+3. **最后查询三级缓存（`singletonFactories`）**
+   - 三级缓存是 beanName 到 对象工厂（`ObjectFactory`）的映射，对象工厂是个函数式接口，这个接口用于动态生成 Bean 的早期引用或代理对象。
+   - 触发条件：仅当一、二级缓存均未找到时，调用工厂生成 Bean 实例，之后将其提升至二级缓存。
+   - **关键作用**：支持 AOP 代理的延迟生成（例如解决代理对象的循环依赖）。
+
+
+
+### 二级缓存可以解决问题
+
+- `getBean(a)`，实例化对象 A 以后放入二级缓存（裸对象），然后 A 开始属性注入
+- 遇到一个属性 B，先从一级缓存里面拿发现没有，瞄一眼二级缓存里面也没有，于是开始 `getBean(b)`：
+- 实例化对象B以后将其放入二级缓存（裸对象），B 开始属性注入，发现 A 不在一级缓存，但是从二级缓存里面拿到了 A 的裸对象注入 B，此时 B 算初始化完成，把 B 从二级缓存里面删掉，放到一级缓存里面，至此 B 创建完成。
+- 最后 A 用于注入的方法就能返回一个从缓存里面拿到的 B 对象，A 的注入也就完成了。
+
+#### 二级缓存的不足
+
+但是二级缓存的问题是，A是代理，有B，B有需要注入A，首先A创建出实例，随后A就走到了populateBean这一步
+
+然后去拿B，B创建，又想来获取A了，此时A那边属于是一个刚创建实例的状态，并未走到生成代理对象那一步，因此直接注入就会出问题，所以应该注册一个回调函数，把A的实例注册进去，函数的返回值是A的对象（实例/代理实例），所以就产生了三级缓存。三级缓存的 `ObjectFactory` 主要是用于提供一个钩子，这个接口的方法返回的就是bean对象，不同之处在于可以在返回裸对象前，给其套上一层代理再返回。如果只有二级缓存，就没有机会返回代理对象。
+
+### 源码流程
+
+> `DefaultSingletonBeanRegistry#getSingleton(name,true)` DCL双重校验锁。
+
+```java
+@Nullable
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+    // 快速从一二级缓存检查已有的单例
+    Object singletonObject = this.singletonObjects.get(beanName);
+    if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+        singletonObject = this.earlySingletonObjects.get(beanName);
+        if (singletonObject == null && allowEarlyReference) {
+            synchronized (this.singletonObjects) {
+                // 加锁，从三级缓存创建单例对象
+                singletonObject = this.singletonObjects.get(beanName);
+                if (singletonObject == null) {
+                    singletonObject = this.earlySingletonObjects.get(beanName);
+                    if (singletonObject == null) {
+                        ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+                        if (singletonFactory != null) {
+                            singletonObject = singletonFactory.getObject();
+                            this.earlySingletonObjects.put(beanName, singletonObject);
+                            this.singletonFactories.remove(beanName);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return singletonObject;
+}
+```
+
+------
+
+> 流程正式开始——
+>
+> `DefaultListableBeanFactory#preInstantiateSingletons()` 用于对解析到的` beanNames` 一一进行 `getBean(beanName)`
+>
+> `AbstractBeanFactory#doGetBean(name···)` 
+
+1. `getSingleton(name,true)` 获取不到再往下走
+2. 类似双亲委派，找 parent，parent 找不到再自行寻找
+3. 自行寻找：(dependsOn) 然后 `getSingleton(name, singletonFactory)`
+4. `getSingleton(name, singletonFactory)`: 先一级缓存找，找不到就真正开始<mark>创建工作</mark>：
+   - 首先将其加到 CreationSet 表明其正在创建。
+   - `singletonFactory`实际上就是一个`ObjectFactory`，这个函数式接口实现方法通过`createBean(name···)`获取对象。
+   - 创建完成将其从 CreationSet 中移除，保证其只存在于一级缓存单例池中。最后返回创建好的 bean
+
+> `AbstractAutowireCapableBeanFactory#doCreateBean(name,mbd,args)` 
+
+1. `createBeanInstance()`：创建出裸对象，此时未注入依赖。（实际上返回的是 BeanWrapper，有更完善的功能，本质还是对象实例）
+
+   - 当且仅当<u>单例+允许循环依赖+这个bean在 CreationSet 中</u>，才加三级缓存`addSingletonFactory`，一定要保证一级和二级缓存里面没有，然后把ObjectFactory加到三级缓存里面。所以单例 bean 加入了三级缓存：lambda：`getEarlyBeanReference()`返回创建的裸/代理对象 `singletonObject`
+
+2. `populateBean()`：进行字段、方法注入。做一些` postProcessAfterInstantiation` 实例化之后初始化之前的工作。然后就是 `autowireByName/Name`，本质上就是通过 `getBean(name···)`获取实例。
+
+   - 依赖注入就是这里遇到的问题，如果代理对象出现循环依赖，那么其生成应该是初始化之后，所以此阶段断然不能提供出代理对象，因此加入三级缓存提前暴露出一个引用，。
+
+3. `initializeBean()`：
+
+   - 调用 `BeanPostProcessor#postProcessBeforeInitialization`。
+
+   - 调用初始化方法。(PostConstruct-initMethod-afterPropertiesSet)
+
+   - 调用 `BeanPostProcessor#postProcessAfterInitialization`（**一般到这里才生成代理对象**）。
+
+4. 完成上述工作之后，如果当前是存在于三级缓存，则调用下方的 `getSingleton(name,true)` ： true 代表允许早期引用（主要解决循环依赖）
+
+
+
+> 代理：`AbstractAutoProxyCreator`
+
+```java
+// 这个方法是用于三级缓存生成对象的时候将bean放到earlyBeanReferences里面，
+public Object getEarlyBeanReference(Object bean, String beanName) {
+    Object cacheKey = this.getCacheKey(bean.getClass(), beanName);
+    this.earlyBeanReferences.put(cacheKey, bean);
+    return this.wrapIfNecessary(bean, beanName, cacheKey);
+}
+public Object postProcessAfterInitialization(@Nullable Object bean, String beanName) {
+    if (bean != null) {
+        Object cacheKey = this.getCacheKey(bean.getClass(), beanName);
+        if (this.earlyBeanReferences.remove(cacheKey) != bean) {
+            // wrap 包装成代理的核心方法
+            return this.wrapIfNecessary(bean, beanName, cacheKey);
+        }
+    }
+
+    return bean;
+}
+```
+
+### 无法解决的循环引用
+
+如果是 AB互相依赖，A只有含参构造，那么注入B完成之前就无法创建一个A实例出来，自然也没法加到缓存里面，A尝试注入B，B那边尝试注入A彻底卡死。
+
+但是 从B开始又可以了，然而对于普通的bean来说，注册顺序并不是一个可控的状态，所以尽量避免含参构造的bean之间互相依赖
+
+
+
+
+
+
 
 # Spring AOP 
 
@@ -1426,7 +1579,7 @@ RequestBody请求体中的数据通常是以JSON、XML等格式发送的，可�
 
 ### Response
 
-#### 响应页面（跳转页面）
+#### 直接返回：响应的是一个页面
 
 ```java
 @RequestMapping("/toPage")
@@ -1435,11 +1588,9 @@ public String toJumpPage(){
 }
 ```
 
-直接在方法里 return "page.jsp" 
+直接在方法里 return "page.jsp" ，<u>Spring默认认为Controller的方法返回的就是一个页面</u>，也就是说会经过渲染步骤。
 
-Spring默认认为Controller的方法返回的就是一个页面
-
-#### 响应文本数据@ResponseBody
+#### 返回值就是响应体：@ResponseBody
 
 ![image-20241021225227708](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241021225227708.png)
 
@@ -1541,7 +1692,7 @@ value="/users/{id}"  URL中的{id}和用@PathVariable修饰的方法参数id是�
 
 ##### 类级别注解 @RestController
 
-类级别的@RequestBody，表示所有类的返回值都是请求体的数据，既然@Controller和RequestBody都要写，合而为一即可
+类级别的@RequestBody，表示所有类的返回值都是请求体的数据，既然@Controller和RequestBody都要写，合而为一即可。
 
 ##### 方法级别注解 @PostMapping
 
@@ -1637,7 +1788,7 @@ dao接口加repository注解（可加可不加）
 
 `Service`接口添加@Transactional
 
-### 前后端联调
+### **前后端联调**
 
 #### 表现层数据封装模型 - 设置统一的返回结果集Result
 
@@ -1791,7 +1942,7 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 加Configuration注解，继承WebMvcConfigurationSupport类，重写resourceHandler方法
 
-#### <mark>Config包详解</mark> 
+#### 配置类
 
 ##### ServletContainersInitializerConfig (Servlet容器配置类)
 
@@ -1827,7 +1978,7 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 ##### SpringMvcConfig(@Configuration @EnableWebMvc)
 
-<u>对应spring-servlet.xml</u>，配置 [Servlet WAC](#swac) 
+<u>对应spring-webmvc.xml</u>，配置 [Servlet WAC](#swac) 
 
 [@EnableWebMvc (Spring Framework 6.1.14 API)](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/web/servlet/config/annotation/EnableWebMvc.html) 
 
@@ -1880,11 +2031,11 @@ Enum枚举：CodeEnum是一个类，类内部有一字段code(Integer)
 
 ![image-20241023193138396](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193138396.png)
 
-#### In Filter
+#### Filter
 
 ![image-20241023193414214](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023193414214.png)
 
-filter在一定是在访问servlet之前，interceptor只能在servlet中， <mark>before Controller<mark>
+filter在一定是在访问 servlet 之前，interceptor只能在servlet中， <mark>before Controller</mark>
 
 ### 功能类
 
@@ -1918,23 +2069,11 @@ addPathPatterns 加的不是前缀，<mark>是严格的URL匹配<mark>，配/boo
 
 ### 拦截方法
 
-#### preHandle
+`boolean preHandle(req,resp,handler)` req和resp是servlet的响应和请求，handler实际上是 HandlerMethod，通过 getMethod 能拿到执行的业务方法的对象（反射）
 
-`boolean preHandle(req,resp,handler)`
+`void postHandle(req,resp,handler,modelAndView)` 渲染页面之前调用
 
-req和resp是servlet的响应和请求，handler实际上是HandlerMethod，通过getMethod能拿到执行的业务方法的对象（反射）
-
-#### postHandle
-
-`void postHandle(req,resp,handler,modelAndView)`
-
-页面跳转相关。
-
-#### afterCompletion
-
-`void afterCompletion(req,resp,handler,exception)`
-
-能拿到原始业务方法执行过程中的异常
+`void afterCompletion(req,resp,handler,exception)` 能拿到原始业务方法执行过程中的异常
 
 ### 拦截链顺序
 
@@ -1954,7 +2093,7 @@ req和resp是servlet的响应和请求，handler实际上是HandlerMethod，通�
 
 
 
-## Spring MVC 源码分析
+## Spring MVC 启动流程
 
 ### `WebApplicationContext`
 
@@ -1962,13 +2101,31 @@ req和resp是servlet的响应和请求，handler实际上是HandlerMethod，通�
 
 #### <span id="wac">WebApplicationContext(WAC)</span> 
 
-- ApplicationContext(AC) 表示 ioc 容器。WAC是普通AC的扩展，它具有Web应用程序所需的一些额外功能，比如可以<u>get</u>ServletContext或者<u>set</u>ServletContext
-- `Root WAC`在应用启动时首先被加载，并且作为父上下文，供表示层使用，主要负责管理服务层（Service）、数据访问层（DAO）、中间件配置等非 Web 层（表示层）的 Bean
+ApplicationContext(AC) 表示 ioc 容器。WAC是普通AC的扩展，它具有Web应用程序所需的一些额外功能，比如可以获取 ServletContext并修改
 
-#### <span id="swac">Servlet WebApplicationContext(Servlet WAC)</span> 
+```java
+public interface WebApplicationContext extends ApplicationContext {
+    String ROOT_WEB_APPLICATION_CONTEXT_ATTRIBUTE = WebApplicationContext.class.getName() + ".ROOT";
+    String SCOPE_REQUEST = "request";
+    String SCOPE_SESSION = "session";
+    String SCOPE_APPLICATION = "application";
+    String SERVLET_CONTEXT_BEAN_NAME = "servletContext";
+    String CONTEXT_PARAMETERS_BEAN_NAME = "contextParameters";
+    String CONTEXT_ATTRIBUTES_BEAN_NAME = "contextAttributes";
+
+    @Nullable
+    ServletContext getServletContext();
+}
+```
+
+#### Root WebApplicationContext(applicationContext.xml)
+
+`Root WAC`在应用启动时首先被加载，并且作为父上下文，供表示层使用，主要负责管理服务层（Service）、数据访问层（DAO）、中间件配置等非 Web 层（表示层）的 Bean
+
+#### <span id="swac">Servlet WebApplicationContext(spring-mvc.xml)</span> 
 
 - `Servlet WAC` 是 `Root WAC` 的**子上下文**，专门用于处理表示层的 Bean 和配置。比如控制器（`Controller`）、视图解析器、拦截器(`Interceptor`)等
-- 每个 `DispatcherServlet` 实例会有一个独立的 `Servlet WAC` 
+- 每个 `DispatcherServlet` 实例会有一个独立的 `Servlet WAC`
 
 #### Parent & Child ApplicatitonContext
 
@@ -1978,18 +2135,28 @@ Root WAC 作为 所有 Servlet WAC 的 Parent，DispatherServlet在创建属于�
 
 ![image-20241023154504980](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023154504980.png)
 
-#### ServletContext
+### ServletContext(web.xml)
 
-- Servlet容器（Tomcat）在启动一个web应用时，根据web.xml 会为整个应用创建一个<mark>唯一<mark>的ServletContext(SC)对象，应用内部所有的Servlet共享同一个SC。
+作用
+
+- 存储 Web 应用的全局参数（如 web.xml 中的`<context-param>`）
+- 提供对 Web 应用资源（如文件、配置）的访问
+- 作为应用范围内的共享数据存储（通过`setAttribute()`和`getAttribute()`）
+- 生命周期与 Web 应用一致，从服务器启动到停止
+
+注意事项
+
+- Servlet容器（Tomcat）在启动一个web应用时，根据web.xml 会为整个应用创建一个<mark>唯一</mark>的ServletContext(SC)对象，应用内部所有的Servlet共享同一个SC。
 - ServletContext是Servlet与Servlet容器（Tomcat）之间直接通信的接口。
 - 容器中的Servlet可以通过它来访问容器中的各种资源
+
 - ServletContext跟XML一样，由Attributes组成，要访问资源就要通过字符串name访问，可以通过`void setAttribute(name, object) `来将ServletContext与你的object绑定，`Object getAttribute(name)`可以得到object
 - `Enumeration<String> getInitParameterNames()` 获取所有 `<context-param/>` 参数的名称 字符串枚举
 - ` String getInitParameter(name)` 根据name获取指定的 `<context-param/>` 参数值
 
 ![image-20241023013135254](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023013135254.png)
 
-##### Root WAC, Servlet WAC, ServletContext之间的关系
+#### Root WAC, Servlet WAC, ServletContext之间的关系
 
 ![image-20241022230909096](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241022230909096.png)
 
@@ -1999,9 +2166,9 @@ Root WAC 作为 所有 Servlet WAC 的 Parent，DispatherServlet在创建属于�
 
 - WAC提供了获取ServletContext的抽象方法 `getServletContext()` 
 
-![context](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/无标题-1729654361571-5.png)
+![image-20250613113913619](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20250613113913619.png)
 
-##### web.xml 配置 ServletContext
+#### web.xml 配置 ServletContext
 
 Tomcat创建web应用时，会构建ServletContext对象，根据web.xml中的配置把如下参数都存到ServletContext对象中，注册Listener，Servlet等
 
@@ -2075,31 +2242,34 @@ ContextLoaderListener 能监听Web应用启动或关闭的事件（会修改Serv
 
 ### DispatcherServlet - 创建 Servlet WAC
 
-- 本质就是一个Servlet，所以需要在web.xml中注册，继承自HttpServlet->HttpServletBean->FrameworkServlet
+#### 本质——Servlet
 
-- Spring MVC 的核心前端控制器，用于处理所有进入的 HTTP 请求。将请求分发给适当的处理器（控制器 Controller），并在处理后将响应返回给客户端。
+- Spring MVC 的核心**前端控制器**，用于处理所有进入的 HTTP 请求。将请求分发给适当的处理器（控制器 Controller），并在处理后将响应返回给客户端。
 
-- 每一个 `DispatcherServlet` 都拥有自己的 [Servlet WebApplicationContext](#swac)，管理与 Web 层(表现层)相关的 Bean，如控制器、视图解析器、拦截器等。
+- 每一个 `DispatcherServlet` 都拥有自己的 [Servlet WebApplicationContext](#swac)，管理与 Web 层(表现层)相关的 Bean，如控制器Controller、视图解析器ViewResolver、拦截器Interceptor等。
 
-- HttpServletBean有一个final的init()**[Servlet的入口方法]**  其中会调用抽象方法initServletBean()
+- 本质就是一个Servlet，在web.xml中注册，继承链 `HttpServlet->HttpServletBean->FrameworkServlet`
+
+- HttpServletBean有一个final `init()`**[Servlet的入口方法]**  其中会调用抽象方法`initServletBean()`
 
 - FrameServlet实现了initServletBean(): **[生成Servlet WAC，设置parent和ServletContext]** 最后会调用initStrategies
 
-  ```java
-  ServletContext var10000 = this.getServletContext();
-  String var10001 = this.getClass().getSimpleName();
-  var10000.log("Initializing Spring " + var10001 + " '" + this.getServletName() + "'");
-  //记录日志
-  ```
 
-  - 同样的，途中也会调用自己的initWAC方法：
-    - 调用WACUtils工具类，获得自己所在的ServletContext的**Root WAC** 
-    - 将自己的WAC转换成CWAC，如果存在RootWAC，则将其设置为自己的parent
-    - 然后configureAndRefreshWAC(cwac)：设置ServletContext为sc，从其中ServletConfig中获取 `<init-param>` 参数的值
+```java
+ServletContext var10000 = this.getServletContext();
+String var10001 = this.getClass().getSimpleName();
+var10000.log("Initializing Spring " + var10001 + " '" + this.getServletName() + "'");
+//记录日志
+```
 
-  ![image-20241023013013442](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023013013442.png)
+- 同样的，途中也会调用自己的initWAC方法：
+  - 调用WACUtils工具类，获得自己所在的ServletContext的 **Root WAC** 
+  - 将自己的WAC转换成ConfigurableWAC，如果存在 RootWAC，则将其设置为自己的parent
+  - 然后configureAndRefreshWAC(cwac)：设置ServletContext为sc，从其中ServletConfig中获取 `<init-param>` 参数的值
 
-  - 最后根据自己的ServletConfig获取到ServletContext，根据自己的名称设置自己的Servlet WAC在ServletContext中的Key
+![image-20241023013013442](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/image-20241023013013442.png)
+
+- 最后根据自己的ServletConfig获取到ServletContext，根据自己的名称设置自己的Servlet WAC在ServletContext中的Key
 
 - DispatcherServlet实现了initStrategies [生成各个功能组件，异常处理器，视图处理，请求映射]
 
@@ -2107,7 +2277,7 @@ ContextLoaderListener 能监听Web应用启动或关闭的事件（会修改Serv
 
 这两个context都是在ServletContext中，属于dispatcherServlet的上下文是servletWAC，找不到的话就去rootWAC中找
 
-### <span id="webappinit">Java形式配置ServletContext——WebApplicationInitializer</span>
+### <span id="webappinit">Java配置ServletContext——WebApplicationInitializer</span>
 
 ![屏幕截图 2024-10-23 133904](https://pub-9e727eae11e040a4aa2b1feedc2608d2.r2.dev/PicGo/屏幕截图 2024-10-23 133904.png)
 
@@ -2121,23 +2291,147 @@ Java EE Servlet 规范定义了这个接口，web容器（Tomcat）启动时根�
 
 **SpringServletContainerInitializer** 是Spring 对其的实现，其onStartup方法会调用 **[WebApplicationInitializer](#webappinit)** 的onStartup(**ServletContext sc**)初始化Web应用
 
-### SpringMVC Web应用启动流程
+### 典型 SpringMVC 应用启动流程
 
 [Spring MVC启动流程](https://www.cnblogs.com/54chensongxia/p/12522804.html) 
 
 - Tomcat 读取web.xml中 `<context-param>` `<listener>`  然后创建一个全局共享的ServletContext
-- Tomcat 将`<context-param>` `<listener>`转化为键值对，存到ServletContext 
+  - Tomcat 将`<context-param>` `<listener>`转化为键值对，存到ServletContext 
+
 - Tomcat 加载Listener实例，实施监听，Listener必须实现<u>ServletContext</u>Listener接口（比如ContextLoaderListener）
-- **Web项目继续启动中**，触发Listener中的contextInitialized(ServletContexEvent event)，根据ServletContext中 `<context-param>` 部分创建父容器，configClass是类的形式，configLocation是xml配置文件的形式
+- **Web项目继续启动**，触发Listener中的contextInitialized(ServletContexEvent event)，根据ServletContext中 `<context-param>` 部分创建根容器，configClass是类的形式，configLocation是xml配置文件（如`applicationContext.xml`）。将根上下文绑定到 ServletContext（键为`ROOT_WEB_APPLICATION_CONTEXT_ATTRIBUTE`）
 - 创建完父容器，如果有`<filter>`会创建filter，然后读取 `<servlet>` 用于注册DispatcherServlet（这块流程建议从init方法一步步往下看，流程还是很清晰的），因为DispatcherServlet实质是一个Servlet，所以会先执行它的init方法。这个init()方法在**HttpServletBean**这个类中实现，其主要工作是做一些初始化工作，将我们在web.xml中配置的参数设置到ServletContext的ServletConfig中，然后再触发**FrameworkServlet**的initServletBean()方法；
   - **FrameworkServlet**主要作用是初始化Spring子容器，设置其父容器，并将其放入ServletContext中；
-  - **FrameworkServlet**在调用initServletBean()的过程中同时会触发**DispatcherServlet**的onRefresh()方法，这个方法会初始化Spring MVC的各个功能组件。比如异常处理器、视图处理器、请求映射处理等
+  - **FrameworkServlet**在调用initServletBean()的过程中同时会触发**DispatcherServlet**的`onRefresh()`方法，这个方法会初始化Spring MVC的各个功能组件。比如异常处理器、视图处理器、拦截器、请求映射处理**HandlerMapping**等
 
-> 100% code-based 
+> XML-free startup
 
 用Java类的形式配置ServletContext，有一些细微差异，Spring这边实现了ServletContainerInitializer接口，注册组件的工作就交给了WebApplicationInitializer：
 
-先根据指定的rootWacConfig配置类（SpringConfig）创建出父容器，父容器作为参数进行Listener的有参构造，最后以<mark>add<mark>Listener的方式注册到ServletContext中。
+先根据指定的rootWacConfig配置类（SpringConfig）创建出父容器，父容器作为参数进行Listener的有参构造，最后以<mark>add</mark>Listener的方式注册到ServletContext中。
+
+
+
+## <span id="spring-mvc-exec">Spring MVC 执行流程</span>
+
+### 核心组件
+
+| 组件名称          | 核心职责                                             | 常见实现类                                                   |
+| ----------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
+| DispatcherServlet | 前端控制器，协调所有组件处理请求                     | `org.springframework.web.servlet.DispatcherServlet`          |
+| HandlerMapping    | 映射 URL 到处理器                                    | RequestMappingHandlerMapping、SimpleUrlHandlerMapping        |
+| HandlerAdapter    | 适配处理器并执行                                     | RequestMappingHandlerAdapter、SimpleControllerHandlerAdapter |
+| ViewResolver      | 解析逻辑视图名到物理视图                             | InternalResourceViewResolver、ThymeleafViewResolver          |
+| Interceptor       | 拦截请求并在不同阶段处理（预处理、后处理、完成处理） | HandlerInterceptor 接口实现类                                |
+| View              | 渲染模型数据为响应内容                               | JSPView、ThymeleafView、JSONView                             |
+
+### doDispatch()
+
+SpringMVC 的执行流程本质是 **“组件协作式” 的请求处理模式 **，通过 DispatcherServlet 作为中枢，核心方法是`DispatcherServlet#doDispatch`方法，串联 HandlerMapping、HandlerAdapter、ViewResolver 等组件，实现从请求接收到响应的自动化处理。理解此流程的核心在于掌握各组件的职责及数据流转路径，这也是排查 MVC 相关问题（如请求 404、参数绑定失败）的关键思路。
+
+**步骤 1：DispatcherServlet 接收请求**
+
+- 所有请求通过 URL 映射到 DispatcherServlet（如`/api/*`），由其统一调度。
+
+**步骤 2：HandlerMapping 获取 HandlerExecutionChain 和相应的 HandlerAdaptor **
+
+- 常见实现类：`RequestMappingHandlerMapping`（基于注解映射）、`SimpleUrlHandlerMapping`（基于 URL 路径映射）。请求`/api/user/list`会匹配到`@RequestMapping("/user/list")`标注的 Controller 方法。
+
+> `DispatcherServlet#doDispatch(HttpServletRequest request, HttpServletResponse response)`
+
+`DispatcherServlet`接收请求后，调用`HandlerMapping`，将 Controller(handler) 和拦截器包装到`HandlerExecutionChain`。
+
+> `DispatcherServlet#getHandlerAdapter(Object handler)`
+
+获取真正的业务handler，可能是注解形式的Controller方法。
+
+```java
+@RestController
+public class MyController {
+    @GetMapping("/hello")
+    public String hello() { return "hi"; }
+}
+
+```
+
+Spring 在运行时会把这个方法封装为 `HandlerMethod` 对象，这个对象包含控制器实例（即 `MyController`）、方法对象（即 `hello()`）、方法参数等元信息。`handler instanceof HandlerMethod == true` 
+
+除此之外可能会实现旧版的 Controller 接口，返回的是 ModelAndView。不知道是哪种，所以就会从 HandlerAdaptors 中找到一个支持 HandlerMethod 的 Adaptor。
+
+**步骤 3：拦截器预处理器** 
+
+> `HandlerExecutionChain#applyPreHandle(req,resp)`
+
+- **预处理（preHandle）**：按注册顺序依次调用拦截器的`preHandle()`方法。在处理器执行前拦截请求，可用于权限校验、日志记录。可以实现 WebMvcConfigurer 的 `addInterceptors(InterceptorRegistry registry)` 注册拦截器并设定拦截路径。
+
+**步骤 4：HandlerAdapter 执行处理器**
+
+> `HandlerAdaptor#handle(req,resp,handler)` 返回值 modelandview
+
+- 常见实现类：`RequestMappingHandlerAdapter`（处理注解控制器）、`SimpleControllerHandlerAdapter`（处理传统控制器）。
+- 职责：所有拦截器的`preHandle()`都返回`true`时，通过`HandlerAdapter`的`handle()`方法执行 Handler。
+- 实现类有参数解析器和和结果处理器。
+- REST 风格的调用栈，从外到内：
+  1. `AbstractHandlerMethodAdapter#handle()`
+  2. `RequestMappingHandlerAdapter#handleInternal()`
+  3. `RequestMappingHandlerAdapter#invokeHandlerMethod()` 将 handlerMethod 包装成 invocable
+  4. `ServletInvocableHandlerMethod#invokeAndHandle()`通过反射调用原始方法。
+  5. `HandlerMethodReturnValueHandler#handleReturnValue()` 结果处理器。
+  6. REST：通过`mavContainer`告诉框架已经写完 response，不需要渲染。比如`RequestResponseBodyMethodProcessor`这样的实现类，里面的`writeWithMessageConverters()`把返回值通过 `xxxxMessageConverter`转化成 JSON/XML，将 JSON 直接写入 `HttpServletResponse` 输出流。之后会返回 mv 为 null。
+
+**步骤 5：拦截器后处理器**
+
+> `HandlerExecutionChain#applyPostHandle(req,resp,mv)`
+
+- **后处理（postHandle）**：在处理器执行之后，**逆序**调用拦截器的`postHandle()`方法，可用于在渲染之前修改模型数据，或者可以添加响应头（CORS、token...）。
+
+**步骤 6：结果响应与异常处理**（可能有渲染）
+
+> `DispatcherServlet#processDispatchResult(req, resp, chain, mv, dispatchException)`
+
+**步骤 6.1：异常处理，processHandlerException**
+
+DispatcherServlet 执行 handler（即 controller）期间抛出异常时，会尝试通过一组 `HandlerExceptionResolver` 进行异常处理，如下为REST处理异常的一个示例。
+
+```java
+@Slf4j
+@RestControllerAdvice
+public class WebExceptionAdvice {
+
+    @ExceptionHandler(RuntimeException.class)
+    public Result handleRuntimeException(RuntimeException e) {
+        log.error(e.toString(), e);
+        return Result.fail("服务器内部异常");
+    }
+}
+```
+
+> > 如果是 `@ResponseBody` 或 `@RestController`，`ModelAndView` 为 null，不会走渲染逻辑。
+>
+> （步骤 6.2：处理器返回的 ModelAndView）
+>
+> - 处理器方法返回值会被封装为 ModelAndView：
+>   - 模型（Model）：存储数据（如`model.addAttribute("users", userList)`）。
+>   - 视图（View）：逻辑名称（如`"user/list"`，由视图解析器转换为物理视图）。
+>
+> （步骤 6.3：ViewResolver 解析视图）
+>
+> ```xml
+> <bean class="org.springframework.web.servlet.view.InternalResourceViewResolver">
+>     <property name="prefix" value="/WEB-INF/views/"/>
+>     <property name="suffix" value=".jsp"/>
+> </bean>
+> ```
+>
+> - 逻辑视图`"user/list"`会被解析为`/WEB-INF/views/user/list.jsp`。
+>
+> （步骤 6.4：视图渲染与响应生成）
+>
+> - 视图对象（如 JSP）将模型数据渲染为 HTML 内容，写入 HttpServletResponse 的输出流。
+
+**步骤 7：拦截器完成处理器**
+
+- 所有拦截器的`afterCompletion`方法按照注册的顺序逆序执行，用于渲染后处理。
 
 # Spring Boot
 
@@ -2515,7 +2809,7 @@ public class MyApp {
   
   A：启动时添加 `--debug` 参数，日志会输出所有自动配置的评估结果。
 
-## SpringBoot 启动流程
+## <span id="spring-boot-init">SpringBoot 启动流程</span>
 
 ### `app.run()`
 

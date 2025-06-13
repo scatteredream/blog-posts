@@ -6,7 +6,7 @@ tags:
 categories: 算法
 ---
 
-# TOP 100 freq
+# TOP 100 freq words
 
 ## 问题
 
